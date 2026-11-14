@@ -18,6 +18,7 @@ import (
 	"github.com/disgoorg/disgo/handler/middleware"
 	"github.com/disgoorg/disgo/voice"
 	"github.com/disgoorg/godave/golibdave"
+	"github.com/disgoorg/snowflake/v2"
 	_ "github.com/joho/godotenv/autoload"
 )
 
@@ -59,7 +60,16 @@ func main() {
 			gateway.WithIntents(gateway.IntentsNonPrivileged, gateway.IntentMessageContent),
 		),
 		bot.WithVoiceManagerConfigOpts(voice.WithDaveSessionCreateFunc(golibdave.NewSession)),
-		bot.WithCacheConfigOpts(cache.WithCaches(cache.FlagVoiceStates)),
+		// Turn on disgo's cache for these kinds of data. Discord sends them when the bot
+		// starts (and updates as they change); without a flag disgo throws that data
+		// away, and lookups like Caches.VoiceState or Caches.SelfMember find nothing.
+		bot.WithCacheConfigOpts(cache.WithCaches(
+			cache.FlagVoiceStates,
+			cache.FlagRoles,
+			cache.FlagMembers,
+			cache.FlagChannels,
+			cache.FlagGuilds,
+		)),
 		bot.WithEventListeners(r),
 	)
 
@@ -99,10 +109,20 @@ func onTranscribeStart(e *handler.CommandEvent) error {
 		return createHiddenMessageForCommandCaller(e, "It looks like you aren't in a chat, join one then run the command again")
 	}
 
-	clickableChatName := discord.ChannelMention(*voiceState.ChannelID)
-	title := e.SlashCommandInteractionData().String("title")
+	canJoin, err := checkBotCanJoin(e, *guildID, *voiceState.ChannelID)
+	if err != nil {
+		log.Printf("Failed to check permissions to join that chat %v", err)
+		return createHiddenMessageForCommandCaller(e, "Failed to check permissions to join that chat")
+	}
 
-	err := createHiddenMessageForCommandCaller(e, fmt.Sprintf("Joining %s and setting chat title to '%s'", clickableChatName, title))
+	clickableChatName := discord.ChannelMention(*voiceState.ChannelID)
+
+	if !canJoin {
+		return createHiddenMessageForCommandCaller(e, fmt.Sprintf("Bot does not have the correct permissions to join %s", clickableChatName))
+	}
+
+	title := e.SlashCommandInteractionData().String("title")
+	err = createHiddenMessageForCommandCaller(e, fmt.Sprintf("Joining %s and setting chat title to '%s'", clickableChatName, title))
 	if err != nil {
 		return err
 	}
@@ -129,6 +149,26 @@ func onTranscribeStart(e *handler.CommandEvent) error {
 	}
 
 	return nil
+}
+
+func checkBotCanJoin(e *handler.CommandEvent, serverID, channelID snowflake.ID) (bool, error) {
+	// Look up the bot's own member info (which roles it has) in disgo's cache.
+	// ok is false if the cache doesn't have it. That doesn't mean the bot isn't in
+	// the server; it means we can't check its permissions.
+	botMember, memberCacheOk := e.Client().Caches.SelfMember(serverID)
+	if !memberCacheOk {
+		// Couldn't check: return false with an error
+		return false, fmt.Errorf("could not determine if the bot was in the cache")
+	}
+
+	channel, channelCacheOk := e.Client().Caches.Channel(channelID)
+	if !channelCacheOk {
+		return false, fmt.Errorf("could not find that voice channel in the cache to determine join perms, looked for %s", channelID)
+	}
+
+	perms := e.Client().Caches.MemberPermissionsInChannel(channel, botMember)
+
+	return perms.Has(discord.PermissionConnect, discord.PermissionViewChannel), nil
 }
 
 func createHiddenMessageForCommandCaller(e *handler.CommandEvent, message string) error {
