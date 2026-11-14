@@ -59,6 +59,11 @@ type fakeConn struct {
 	openedChannel      snowflake.ID
 	selfMute, selfDeaf bool
 	closed             bool
+	receiver           voice.OpusFrameReceiver // what the handler set up to listen with
+}
+
+func (c *fakeConn) SetOpusFrameReceiver(receiver voice.OpusFrameReceiver) {
+	c.receiver = receiver
 }
 
 func (c *fakeConn) Open(_ context.Context, channelID snowflake.ID, selfMute bool, selfDeaf bool) error {
@@ -312,6 +317,9 @@ func TestStartJoinsTheCallersChannel(t *testing.T) {
 	if !conn.selfMute || conn.selfDeaf {
 		t.Errorf("should join muted but NOT deafened (deafened = no audio), got mute=%v deaf=%v", conn.selfMute, conn.selfDeaf)
 	}
+	if _, ok := conn.receiver.(*packetCounter); !ok {
+		t.Errorf("after joining it should start listening with a packetCounter, got %T", conn.receiver)
+	}
 
 	current, running := activeSessions.get(serverID)
 	want := session{StartedBy: callerID, ChannelID: meetingChannelID, Title: "Weekly Meetup"}
@@ -472,6 +480,9 @@ func TestStartWhenJoiningFails(t *testing.T) {
 	}
 	if !env.voice.created[0].closed {
 		t.Error("the failed connection should be closed")
+	}
+	if env.voice.created[0].receiver != nil {
+		t.Error("a failed join should not start listening")
 	}
 	noSession(t) // the claim is given back so start can be tried again
 }

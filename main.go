@@ -166,6 +166,7 @@ func onTranscribeStart(e *handler.CommandEvent) error {
 		ChannelID: *voiceState.ChannelID,
 		Title:     title,
 	})
+
 	if !claimed {
 		return createHiddenMessageForCommandCaller(e, fmt.Sprintf("I'm already transcribing '%s' in %s, use /transcribe stop first",
 			existingSession.Title, discord.ChannelMention(existingSession.ChannelID)))
@@ -217,6 +218,8 @@ func onTranscribeStart(e *handler.CommandEvent) error {
 		})
 		return err
 	}
+
+	voiceConnection.SetOpusFrameReceiver(newPacketCounter())
 
 	// joined, so keep the claim: the session now runs until /transcribe stop
 	joined = true
