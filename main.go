@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/disgoorg/disgo"
 	"github.com/disgoorg/disgo/bot"
@@ -14,6 +15,9 @@ import (
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/gateway"
 	"github.com/disgoorg/disgo/handler"
+	"github.com/disgoorg/disgo/handler/middleware"
+	"github.com/disgoorg/disgo/voice"
+	"github.com/disgoorg/godave/golibdave"
 	_ "github.com/joho/godotenv/autoload"
 )
 
@@ -45,15 +49,17 @@ func main() {
 	token := os.Getenv("BOT_TOKEN")
 
 	r := handler.New()
+	r.Use(middleware.Go)
 	r.Route("/transcribe", func(r handler.Router) {
 		r.Command("/start", onTranscribeStart)
 	})
 
 	client, err := disgo.New(token,
-		bot.WithCacheConfigOpts(cache.WithCaches(cache.FlagVoiceStates)),
 		bot.WithGatewayConfigOpts(
 			gateway.WithIntents(gateway.IntentsNonPrivileged, gateway.IntentMessageContent),
 		),
+		bot.WithVoiceManagerConfigOpts(voice.WithDaveSessionCreateFunc(golibdave.NewSession)),
+		bot.WithCacheConfigOpts(cache.WithCaches(cache.FlagVoiceStates)),
 		bot.WithEventListeners(r),
 	)
 
@@ -96,7 +102,33 @@ func onTranscribeStart(e *handler.CommandEvent) error {
 	clickableChatName := discord.ChannelMention(*voiceState.ChannelID)
 	title := e.SlashCommandInteractionData().String("title")
 
-	return createHiddenMessageForCommandCaller(e, fmt.Sprintf("Joining %s and setting chat title to %s", clickableChatName, title))
+	err := createHiddenMessageForCommandCaller(e, fmt.Sprintf("Joining %s and setting chat title to '%s'", clickableChatName, title))
+	if err != nil {
+		return err
+	}
+
+	// set up vc
+	voiceConnection := e.Client().VoiceManager.CreateConn(*guildID)
+
+	// set a timeout for how long to wait for a response
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// join the chat
+	err = voiceConnection.Open(ctx, *voiceState.ChannelID, true, false)
+	if err != nil {
+		// error whilst trying to join
+		voiceConnection.Close(context.Background())
+		log.Printf("couldn't join voice: %v", err)
+
+		_, err = e.CreateFollowupMessage(discord.MessageCreate{
+			Flags:   discord.MessageFlagEphemeral,
+			Content: "Discord took too long to answer, try again",
+		})
+		return err
+	}
+
+	return nil
 }
 
 func createHiddenMessageForCommandCaller(e *handler.CommandEvent, message string) error {
