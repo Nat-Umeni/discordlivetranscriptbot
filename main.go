@@ -10,6 +10,7 @@ import (
 
 	"github.com/disgoorg/disgo"
 	"github.com/disgoorg/disgo/bot"
+	"github.com/disgoorg/disgo/cache"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/gateway"
 	"github.com/disgoorg/disgo/handler"
@@ -49,6 +50,7 @@ func main() {
 	})
 
 	client, err := disgo.New(token,
+		bot.WithCacheConfigOpts(cache.WithCaches(cache.FlagVoiceStates)),
 		bot.WithGatewayConfigOpts(
 			gateway.WithIntents(gateway.IntentsNonPrivileged, gateway.IntentMessageContent),
 		),
@@ -79,8 +81,27 @@ func main() {
 }
 
 func onTranscribeStart(e *handler.CommandEvent) error {
+	// check where the command was called
+	guildID := e.GuildID()
+	if guildID == nil {
+		return createHiddenMessageForCommandCaller(e, "Run this command inside of a server.")
+	}
+
+	// find the chat
+	voiceState, ok := e.Client().Caches.VoiceState(*guildID, e.User().ID)
+	if !ok {
+		return createHiddenMessageForCommandCaller(e, "It looks like you aren't in a chat, join one then run the command again")
+	}
+
+	clickableChatName := discord.ChannelMention(*voiceState.ChannelID)
 	title := e.SlashCommandInteractionData().String("title")
+
+	return createHiddenMessageForCommandCaller(e, fmt.Sprintf("Joining %s and setting chat title to %s", clickableChatName, title))
+}
+
+func createHiddenMessageForCommandCaller(e *handler.CommandEvent, message string) error {
 	return e.CreateMessage(discord.MessageCreate{
-		Content: fmt.Sprintf("Joining and setting chat title to %s", title),
+		Flags:   discord.MessageFlagEphemeral,
+		Content: message,
 	})
 }
