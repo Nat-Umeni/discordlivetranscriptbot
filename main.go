@@ -11,7 +11,6 @@ import (
 	"github.com/disgoorg/disgo"
 	"github.com/disgoorg/disgo/bot"
 	"github.com/disgoorg/disgo/discord"
-	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/disgo/gateway"
 	"github.com/disgoorg/disgo/handler"
 	_ "github.com/joho/godotenv/autoload"
@@ -43,20 +42,24 @@ var commands = []discord.ApplicationCommandCreate{
 
 func main() {
 	token := os.Getenv("BOT_TOKEN")
+
+	r := handler.New()
+	r.Route("/transcribe", func(r handler.Router) {
+		r.Command("/start", onTranscribeStart)
+	})
+
 	client, err := disgo.New(token,
 		bot.WithGatewayConfigOpts(
 			gateway.WithIntents(gateway.IntentsNonPrivileged, gateway.IntentMessageContent),
 		),
-		bot.WithEventListenerFunc(func(e *events.MessageCreate) {
-			if e.Message.Author.ID == e.Client().ID() {
-				return
-			}
-
-			if e.Message.Content == "hello" {
-				e.Client().Rest.CreateMessage(e.ChannelID, discord.MessageCreate{Content: "world!"})
-			}
-		}),
+		bot.WithEventListeners(r),
 	)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = handler.SyncCommands(client, commands, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -73,4 +76,11 @@ func main() {
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 	<-sc
+}
+
+func onTranscribeStart(e *handler.CommandEvent) error {
+	title := e.SlashCommandInteractionData().String("title")
+	return e.CreateMessage(discord.MessageCreate{
+		Content: fmt.Sprintf("Joining and setting chat title to %s", title),
+	})
 }
