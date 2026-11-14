@@ -100,29 +100,45 @@ func onTranscribeStart(e *handler.CommandEvent) error {
 	// check where the command was called
 	guildID := e.GuildID()
 	if guildID == nil {
-		return createHiddenMessageForCommandCaller(e, "Run this command inside of a server.")
+		return createHiddenMessageForCommandCaller(e, "I only work inside a server, run this command in one.")
 	}
 
 	// find the chat
 	voiceState, ok := e.Client().Caches.VoiceState(*guildID, e.User().ID)
 	if !ok {
-		return createHiddenMessageForCommandCaller(e, "It looks like you aren't in a chat, join one then run the command again")
+		return createHiddenMessageForCommandCaller(e, "I can't see you in a chat, join one then run the command again so I know where to go")
+	}
+
+	// check the bot isn't already transcribing in this server. A bot can only be in
+	// one voice channel per server, so joining again would move it out of the
+	// current call and end that transcription. GetConn returns nil if the bot has
+	// no voice connection here.
+	existingConnection := e.Client().VoiceManager.GetConn(*guildID)
+	if existingConnection != nil {
+		// ChannelID is nil if the connection isn't in a channel right now (e.g. halfway
+		// through leaving). Dereferencing nil would panic, and in a middleware.Go
+		// goroutine that crashes the whole bot, so fall back to plain wording.
+		currentChat := "a chat"
+		if existingConnection.ChannelID() != nil {
+			currentChat = discord.ChannelMention(*existingConnection.ChannelID())
+		}
+		return createHiddenMessageForCommandCaller(e, fmt.Sprintf("I'm already transcribing in %s, use /transcribe stop first", currentChat))
 	}
 
 	canJoin, err := checkBotCanJoin(e, *guildID, *voiceState.ChannelID)
 	if err != nil {
 		log.Printf("Failed to check permissions to join that chat %v", err)
-		return createHiddenMessageForCommandCaller(e, "Failed to check permissions to join that chat")
+		return createHiddenMessageForCommandCaller(e, "I couldn't check whether I'm allowed to join that chat, try again in a moment")
 	}
 
 	clickableChatName := discord.ChannelMention(*voiceState.ChannelID)
 
 	if !canJoin {
-		return createHiddenMessageForCommandCaller(e, fmt.Sprintf("Bot does not have the correct permissions to join %s", clickableChatName))
+		return createHiddenMessageForCommandCaller(e, fmt.Sprintf("I don't have permission to join %s, ask an admin to give me View Channel and Connect there", clickableChatName))
 	}
 
 	title := e.SlashCommandInteractionData().String("title")
-	err = createHiddenMessageForCommandCaller(e, fmt.Sprintf("Joining %s and setting chat title to '%s'", clickableChatName, title))
+	err = createHiddenMessageForCommandCaller(e, fmt.Sprintf("I'm joining %s and setting the chat status to '%s'", clickableChatName, title))
 	if err != nil {
 		return err
 	}
@@ -143,7 +159,7 @@ func onTranscribeStart(e *handler.CommandEvent) error {
 
 		_, err = e.CreateFollowupMessage(discord.MessageCreate{
 			Flags:   discord.MessageFlagEphemeral,
-			Content: "Discord took too long to answer, try again",
+			Content: fmt.Sprintf("I couldn't join %s, try again in a moment", clickableChatName),
 		})
 		return err
 	}
