@@ -90,7 +90,12 @@ func main() {
 
 	client, err := disgo.New(token,
 		bot.WithGatewayConfigOpts(
-			gateway.WithIntents(gateway.IntentsNonPrivileged, gateway.IntentMessageContent),
+			gateway.WithIntents(
+				gateway.IntentGuilds,
+				gateway.IntentGuildVoiceStates,
+				gateway.IntentGuildMessages,
+				gateway.IntentMessageContent,
+			),
 		),
 		bot.WithVoiceManagerConfigOpts(voice.WithDaveSessionCreateFunc(golibdave.NewSession)),
 		// Turn on disgo's cache for these kinds of data. Discord sends them when the bot

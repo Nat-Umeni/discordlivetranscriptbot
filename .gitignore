@@ -4,3 +4,4 @@ example_*.go
 settings.json
 recordings/
 *.wav
+models/
