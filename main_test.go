@@ -166,6 +166,10 @@ type fakeRest struct {
 
 	threadMembers []postedMessage // people added to threads: channelID is the thread, messageID the user
 	addMemberErr  error
+
+	messages  map[snowflake.ID]discord.Message // what GetMessage finds
+	getErr    error
+	responses []string // edits to a deferred interaction response (the hidden "thinking…" reply)
 }
 
 type postedMessage struct {
@@ -219,6 +223,22 @@ func (r *fakeRest) UpdateMessage(channelID, messageID snowflake.ID, update disco
 		return nil, r.editErr
 	}
 	return &discord.Message{ID: messageID, ChannelID: channelID}, nil
+}
+
+func (r *fakeRest) GetMessage(_ snowflake.ID, messageID snowflake.ID, _ ...rest.RequestOpt) (*discord.Message, error) {
+	if r.getErr != nil {
+		return nil, r.getErr
+	}
+	message, ok := r.messages[messageID]
+	if !ok {
+		return nil, errors.New("unknown message")
+	}
+	return &message, nil
+}
+
+func (r *fakeRest) UpdateInteractionResponse(_ snowflake.ID, _ string, update discord.MessageUpdate, _ ...rest.RequestOpt) (*discord.Message, error) {
+	r.responses = append(r.responses, *update.Content)
+	return &discord.Message{}, nil
 }
 
 func (r *fakeRest) AddThreadMember(threadID, userID snowflake.ID, _ ...rest.RequestOpt) error {
@@ -403,7 +423,8 @@ func setupCommand(roleID, channelID, noCaptionsID snowflake.ID) string {
 // replies records what a handler sent back as its first reply.
 type replies struct {
 	messages []discord.MessageCreate
-	err      error // if set, sending a reply fails with this
+	popups   []discord.ModalCreate // popups opened instead of a message
+	err      error                 // if set, sending a reply fails with this
 }
 
 // command builds the event disgo would hand to a handler, from Discord-style JSON.
@@ -437,6 +458,10 @@ func (env *testEnv) command(t *testing.T, who caller, data string) (*handler.Com
 			Respond: func(_ discord.InteractionResponseType, data discord.InteractionResponseData, _ ...rest.RequestOpt) error {
 				if sent.err != nil {
 					return sent.err
+				}
+				if popup, ok := data.(discord.ModalCreate); ok {
+					sent.popups = append(sent.popups, popup)
+					return nil
 				}
 				sent.messages = append(sent.messages, data.(discord.MessageCreate))
 				return nil

@@ -52,7 +52,7 @@ var commands = []discord.ApplicationCommandCreate{
 	},
 	// Admin-only setup. It's its own top-level command because Discord can only
 	// hide whole commands: hiding /transcribe from non-admins would also hide
-	// /transcribe optout, which everyone needs.
+	// /transcribe start and stop from note-takers, who need them.
 	discord.SlashCommandCreate{
 		Name:        "captions-setup",
 		Description: "Choose the note-taker role, captions channel and no-captions role for this server",
@@ -80,9 +80,29 @@ var commands = []discord.ApplicationCommandCreate{
 			},
 		},
 	},
+	// Right-click a caption → Apps → Fix caption.
+	fixCaptionCommand,
 }
 
 var recogniser *sherpa.OnlineRecognizer
+
+// newRouter sends each command and popup to its handler.
+func newRouter() *handler.Mux {
+	r := handler.New()
+	// Each interaction runs in its own goroutine, so a slow one (joining voice
+	// can take seconds) doesn't hold up every other event.
+	r.Use(middleware.Go)
+	r.Route("/transcribe", func(r handler.Router) {
+		r.Command("/start", onTranscribeStart)
+		r.Command("/stop", onTranscribeStop)
+	})
+	r.Command("/captions-setup", onCaptionsSetup)
+	r.MessageCommand("/Fix caption", onFixCaption)
+	// The popup's custom ID carries which caption it's fixing and when that
+	// was last edited (see fixCaptionPopup).
+	r.Modal("/fix-caption/{channel}/{message}/{edited}", onFixCaptionSubmit)
+	return r
+}
 
 func main() {
 	token := os.Getenv("BOT_TOKEN")
@@ -96,13 +116,7 @@ func main() {
 		log.Fatalf("couldn't load settings: %v", err)
 	}
 
-	r := handler.New()
-	r.Use(middleware.Go)
-	r.Route("/transcribe", func(r handler.Router) {
-		r.Command("/start", onTranscribeStart)
-		r.Command("/stop", onTranscribeStop)
-	})
-	r.Command("/captions-setup", onCaptionsSetup)
+	r := newRouter()
 
 	recogniser, err = newRecogniser(defaultModelDir)
 	if err != nil {
@@ -541,10 +555,16 @@ func describeCaptionsSettings(serverID snowflake.ID) string {
 // or stop captions in this server. Moderators (Manage Channels) always can, and so
 // can anyone with the note-taker role an admin picked with /captions-setup.
 func canManageTranscription(e *handler.CommandEvent, serverID snowflake.ID) bool {
-	// Discord sends the caller's roles and permissions with every command, so this
-	// needs no cache lookups. Member is nil only in DMs, which callers rule out
-	// first, but check anyway rather than risk a crash.
-	member := e.Member()
+	return memberCanManageTranscription(e.Member(), serverID)
+}
+
+// memberCanManageTranscription is canManageTranscription's rule for any
+// interaction that carries the caller's member info, such as a popup being
+// submitted.
+func memberCanManageTranscription(member *discord.ResolvedMember, serverID snowflake.ID) bool {
+	// Discord sends the caller's roles and permissions with every interaction,
+	// so this needs no cache lookups. Member is nil only in DMs, which callers
+	// rule out first, but check anyway rather than risk a crash.
 	if member == nil {
 		return false
 	}
