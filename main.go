@@ -219,7 +219,8 @@ func onTranscribeStart(e *handler.CommandEvent) error {
 		return err
 	}
 
-	voiceConnection.SetOpusFrameReceiver(newPacketCounter())
+	// start listening: one WAV file per speaker in recordings/ (milestone 0 test only)
+	voiceConnection.SetOpusFrameReceiver(newWavRecorder("recordings"))
 
 	// joined, so keep the claim: the session now runs until /transcribe stop
 	joined = true

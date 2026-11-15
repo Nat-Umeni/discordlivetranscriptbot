@@ -317,8 +317,8 @@ func TestStartJoinsTheCallersChannel(t *testing.T) {
 	if !conn.selfMute || conn.selfDeaf {
 		t.Errorf("should join muted but NOT deafened (deafened = no audio), got mute=%v deaf=%v", conn.selfMute, conn.selfDeaf)
 	}
-	if _, ok := conn.receiver.(*packetCounter); !ok {
-		t.Errorf("after joining it should start listening with a packetCounter, got %T", conn.receiver)
+	if _, ok := conn.receiver.(*wavRecorder); !ok {
+		t.Errorf("after joining it should start recording with a wavRecorder, got %T", conn.receiver)
 	}
 
 	current, running := activeSessions.get(serverID)
