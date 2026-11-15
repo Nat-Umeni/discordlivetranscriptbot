@@ -238,8 +238,9 @@ func onTranscribeStart(e *handler.CommandEvent) error {
 	}
 
 	// start listening: live captions for each speaker, printed to the terminal
-	// for now (milestone 2 posts them in a thread)
-	voiceConnection.SetOpusFrameReceiver(newTranscriber(recogniser, printCaption))
+	// under their name in this server (milestone 2 posts them in a thread)
+	names := memberNames(e.Client().Caches, *guildID)
+	voiceConnection.SetOpusFrameReceiver(newTranscriber(recogniser, captionPrinter(names)))
 
 	// joined, so keep the claim: the session now runs until /transcribe stop
 	joined = true

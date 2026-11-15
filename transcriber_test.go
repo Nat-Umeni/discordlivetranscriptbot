@@ -1,9 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"io"
-	"log"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -160,16 +157,6 @@ func (tt *testTranscriber) hasStream(ssrc uint32) bool {
 	defer tt.mu.Unlock()
 	_, found := tt.speakers[ssrc]
 	return found
-}
-
-// captureLog sends log output to a buffer for one test, so the test can check
-// what was printed. TestMain discards logs otherwise.
-func captureLog(t *testing.T) *bytes.Buffer {
-	t.Helper()
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(io.Discard) })
-	return &buf
 }
 
 // finalsFor is everything one user has had finished, joined up.
@@ -538,18 +525,5 @@ func TestTranscriberConcurrentUse(t *testing.T) {
 	tt.Close()
 	if n := tt.speakerCount(); n != 0 {
 		t.Errorf("Close should free every stream, %d left", n)
-	}
-}
-
-func TestPrintCaption(t *testing.T) {
-	logs := captureLog(t)
-
-	printCaption(42, "so I rang", false)
-	printCaption(42, "So I rang him.", true)
-
-	for _, want := range []string{"42 … so I rang\n", "42: So I rang him.\n"} {
-		if !strings.Contains(logs.String(), want) {
-			t.Errorf("expected %q in the log, got:\n%s", want, logs)
-		}
 	}
 }

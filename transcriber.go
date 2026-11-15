@@ -1,7 +1,6 @@
 package main
 
 import (
-	"log"
 	"sync"
 	"time"
 
@@ -17,17 +16,9 @@ const (
 	tailPadding     = 12800
 )
 
+// captionFunc is what the transcriber does with text: print it (printer.go),
+// record it (tests) or, in milestone 2, post it in Discord.
 type captionFunc func(userID snowflake.ID, text string, final bool)
-
-// printCaption is milestone 1's captionFunc: captions go to the terminal.
-// Milestone 2 swaps it for one that posts in the Discord thread.
-func printCaption(userID snowflake.ID, text string, final bool) {
-	if final {
-		log.Printf("%s: %s", userID, text)
-		return
-	}
-	log.Printf("%s … %s", userID, text)
-}
 
 type speakerStream struct {
 	userID    snowflake.ID

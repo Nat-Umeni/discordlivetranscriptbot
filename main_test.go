@@ -323,7 +323,16 @@ func TestStartJoinsTheCallersChannel(t *testing.T) {
 	if !ok {
 		t.Fatalf("after joining it should start captioning with a transcriber, got %T", conn.receiver)
 	}
-	tr.Close() // stops its quiet timer; the real disgo does this when the call ends
+	defer tr.Close() // stops its quiet timer; the real disgo does this when the call ends
+
+	// Captions go out under the speaker's name in this server.
+	env.client.Caches.AddMember(discord.Member{GuildID: serverID,
+		User: discord.User{ID: callerID, Username: "sam123", GlobalName: strPtr("Sam")}})
+	logs := captureLog(t)
+	tr.onText(callerID, "hello everyone", true)
+	if !strings.Contains(logs.String(), "Sam: hello everyone") {
+		t.Errorf("captions should show the speaker's name, logged:\n%s", logs)
+	}
 
 	current, running := activeSessions.get(serverID)
 	want := session{StartedBy: callerID, ChannelID: meetingChannelID, Title: "Weekly Meetup"}
