@@ -1,9 +1,7 @@
-package main
+package captions
 
 import (
-	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
@@ -22,22 +20,10 @@ const (
 	// How often the poster looks for edits that have become due.
 	posterCheckEvery = 250 * time.Millisecond
 
-	// Discord allows 2000 characters per message; this leaves room for the
-	// name and the "speaking…" line.
-	maxCaptionTextLength = 1900
-
 	// A caption that fails this many times is given up on, so one broken
 	// message can't hold up everyone else's.
 	maxCaptionFailures = 3
-
-	// Shown under a caption while the person is still talking. "-#" is
-	// Discord's small grey text.
-	speakingLine = "\n-# speaking…"
 )
-
-// openPosters counts posters that are still sending, so shutdown can wait for
-// the last captions to reach Discord before it closes the connection.
-var openPosters sync.WaitGroup
 
 // liveCaption is one message in the captions thread: a sentence someone is
 // saying or has said, or a one-off "isn't being captioned" notice.
@@ -54,19 +40,19 @@ type liveCaption struct {
 	failures  int
 }
 
-// threadPoster posts captions in the captions thread and edits them as they
-// grow. The transcriber hands it text while holding its lock, so caption and
-// notCaptioned only note the newest text and return; a worker goroutine does
+// ThreadPoster posts captions in the captions thread and edits them as they
+// grow. The transcriber hands it text while holding its lock, so Caption and
+// NotCaptioned only note the newest text and return; a worker goroutine does
 // the slow part, talking to Discord, in the background.
 //
 // While Discord is slow or making the bot wait (rate limits), newer text just
 // replaces what's waiting, so only the latest version is ever sent and the
 // captions catch up instead of falling further behind. Finished sentences are
 // never skipped.
-type threadPoster struct {
+type ThreadPoster struct {
 	rest      rest.Rest
 	threadID  snowflake.ID
-	nameFor   nameFunc
+	nameFor   NameFunc
 	editEvery time.Duration // captionEditEvery; tests shorten it
 
 	mu    sync.Mutex
@@ -79,10 +65,10 @@ type threadPoster struct {
 	finished  chan struct{} // closed once the worker has sent everything and stopped
 }
 
-// newThreadPoster starts a poster for one call's captions thread. running, if
+// NewThreadPoster starts a poster for one call's captions thread. running, if
 // not nil, counts it until it has sent everything after closed.
-func newThreadPoster(restClient rest.Rest, threadID snowflake.ID, nameFor nameFunc, running *sync.WaitGroup) *threadPoster {
-	p := &threadPoster{
+func NewThreadPoster(restClient rest.Rest, threadID snowflake.ID, nameFor NameFunc, running *sync.WaitGroup) *ThreadPoster {
+	p := &ThreadPoster{
 		rest:      restClient,
 		threadID:  threadID,
 		nameFor:   nameFor,
@@ -101,7 +87,7 @@ func newThreadPoster(restClient rest.Rest, threadID snowflake.ID, nameFor nameFu
 	return p
 }
 
-func (p *threadPoster) caption(userID snowflake.ID, text string, final bool) {
+func (p *ThreadPoster) Caption(userID snowflake.ID, text string, final bool) {
 	p.mu.Lock()
 	c, found := p.open[userID]
 	if !found {
@@ -120,7 +106,7 @@ func (p *threadPoster) caption(userID snowflake.ID, text string, final bool) {
 	p.nudge()
 }
 
-func (p *threadPoster) notCaptioned(userID snowflake.ID) {
+func (p *ThreadPoster) NotCaptioned(userID snowflake.ID) {
 	p.mu.Lock()
 	p.queue = append(p.queue, &liveCaption{userID: userID, notice: true, final: true})
 	p.mu.Unlock()
@@ -128,14 +114,20 @@ func (p *threadPoster) notCaptioned(userID snowflake.ID) {
 	p.nudge()
 }
 
-// closed tells the worker to send whatever's left and stop.
-func (p *threadPoster) closed() {
+// Closed tells the worker to send whatever's left and stop.
+func (p *ThreadPoster) Closed() {
 	p.closeOnce.Do(func() { close(p.done) })
+}
+
+// Done is closed once the poster has sent everything and stopped, after
+// Closed.
+func (p *ThreadPoster) Done() <-chan struct{} {
+	return p.finished
 }
 
 // nudge wakes the worker without ever waiting: the caller may be holding the
 // transcriber's lock.
-func (p *threadPoster) nudge() {
+func (p *ThreadPoster) nudge() {
 	select {
 	case p.wake <- struct{}{}:
 	default: // a nudge is already waiting
@@ -144,7 +136,7 @@ func (p *threadPoster) nudge() {
 
 // run is the worker: it sends whatever's due whenever there's new text, and
 // every posterCheckEvery for paced edits.
-func (p *threadPoster) run(running *sync.WaitGroup) {
+func (p *ThreadPoster) run(running *sync.WaitGroup) {
 	defer func() {
 		close(p.finished)
 		if running != nil {
@@ -171,7 +163,7 @@ func (p *threadPoster) run(running *sync.WaitGroup) {
 
 // sendDue sends everything that's due, oldest caption first. force ignores the
 // edit pacing.
-func (p *threadPoster) sendDue(force bool) {
+func (p *ThreadPoster) sendDue(force bool) {
 	for {
 		c, snapshot, found := p.nextDue(force)
 		if !found {
@@ -190,7 +182,7 @@ type captionSnapshot struct {
 }
 
 // nextDue finds the oldest caption with something to send.
-func (p *threadPoster) nextDue(force bool) (*liveCaption, captionSnapshot, bool) {
+func (p *ThreadPoster) nextDue(force bool) (*liveCaption, captionSnapshot, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -206,7 +198,7 @@ func (p *threadPoster) nextDue(force bool) (*liveCaption, captionSnapshot, bool)
 
 // isDue says whether a caption has something to send now. Called with p.mu
 // held.
-func (p *threadPoster) isDue(c *liveCaption, now time.Time, force bool) bool {
+func (p *ThreadPoster) isDue(c *liveCaption, now time.Time, force bool) bool {
 	paced := now.Sub(c.lastSent) >= p.editEvery
 
 	// After a failure, wait a moment before trying again, unless it's the
@@ -227,7 +219,7 @@ func (p *threadPoster) isDue(c *liveCaption, now time.Time, force bool) bool {
 
 // forgetFinished drops captions with nothing left to send: finished sentences
 // Discord already shows in full, and ones given up on. Called with p.mu held.
-func (p *threadPoster) forgetFinished() {
+func (p *ThreadPoster) forgetFinished() {
 	kept := p.queue[:0]
 	for _, c := range p.queue {
 		fullySent := c.messageID != 0 && c.sentFinal && c.sentText == c.text
@@ -251,19 +243,19 @@ func (p *threadPoster) forgetFinished() {
 
 // send posts or edits one caption. It talks to Discord without holding p.mu,
 // so the transcriber is never kept waiting.
-func (p *threadPoster) send(c *liveCaption, snapshot captionSnapshot) {
-	content := captionMessage(p.nameFor(c.userID), snapshot.text, snapshot.final, c.notice)
+func (p *ThreadPoster) send(c *liveCaption, snapshot captionSnapshot) {
+	content := Message(p.nameFor(c.userID), snapshot.text, snapshot.final, c.notice)
 
 	messageID := snapshot.messageID
 	var err error
 	if messageID == 0 {
 		var message *discord.Message
-		message, err = p.rest.CreateMessage(p.threadID, discord.MessageCreate{Content: content, AllowedMentions: noPings})
+		message, err = p.rest.CreateMessage(p.threadID, discord.MessageCreate{Content: content, AllowedMentions: NoPings})
 		if err == nil {
 			messageID = message.ID
 		}
 	} else {
-		_, err = p.rest.UpdateMessage(p.threadID, messageID, discord.MessageUpdate{Content: &content, AllowedMentions: noPings})
+		_, err = p.rest.UpdateMessage(p.threadID, messageID, discord.MessageUpdate{Content: &content, AllowedMentions: NoPings})
 	}
 
 	p.mu.Lock()
@@ -279,38 +271,9 @@ func (p *threadPoster) send(c *liveCaption, snapshot captionSnapshot) {
 	c.sentText, c.sentFinal = snapshot.text, snapshot.final
 }
 
-// captionMessage is what a caption looks like in the thread:
-//
-//	**Sam:** so I rang him
-//	-# speaking…
-//
-// with the "speaking…" line gone once the sentence has ended.
-func captionMessage(name, text string, final, notice bool) string {
-	if notice {
-		return fmt.Sprintf("*[%s isn't being captioned]*", escapeMarkdown(name))
-	}
-
-	message := fmt.Sprintf("**%s:** %s", escapeMarkdown(name), cutToLength(escapeMarkdown(text), maxCaptionTextLength))
-	if !final {
-		message += speakingLine
-	}
-	return message
-}
-
-// markdownEscaper puts a backslash before the characters Discord treats as
-// formatting, so they show as typed. Backslash itself goes first, or the
-// backslashes added for the others would be escaped too.
-var markdownEscaper = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `_`, `\_`, `~`, `\~`, `|`, `\|`, "`", "\\`")
-
-// escapeMarkdown stops a name like xX_Sam_Xx turning into italics, or a
-// caption's symbols changing how the message looks.
-func escapeMarkdown(text string) string {
-	return markdownEscaper.Replace(text)
-}
-
-// waitForPosters waits for every poster counted in running to finish, or for
+// WaitForPosters waits for every poster counted in running to finish, or for
 // the timeout, and says whether they all finished.
-func waitForPosters(running *sync.WaitGroup, timeout time.Duration) bool {
+func WaitForPosters(running *sync.WaitGroup, timeout time.Duration) bool {
 	allDone := make(chan struct{})
 	go func() {
 		running.Wait()

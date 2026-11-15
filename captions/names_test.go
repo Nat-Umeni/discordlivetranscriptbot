@@ -1,4 +1,4 @@
-package main
+package captions
 
 import (
 	"testing"
@@ -25,7 +25,7 @@ func TestMemberNames(t *testing.T) {
 	caches.AddMember(discord.Member{GuildID: otherServer, Nick: strPtr("Jojo"),
 		User: discord.User{ID: 11, Username: "jo_99", GlobalName: strPtr("Jo")}})
 
-	nameFor := memberNames(caches, thisServer)
+	nameFor := MemberNames(caches, thisServer)
 
 	tests := []struct {
 		why    string

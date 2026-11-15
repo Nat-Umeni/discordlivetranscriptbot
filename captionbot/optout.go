@@ -1,14 +1,13 @@
-package main
+package captionbot
 
 import (
 	"slices"
 
 	"github.com/disgoorg/disgo/cache"
 	"github.com/disgoorg/snowflake/v2"
-)
 
-// optOutFunc says whether someone must not be captioned.
-type optOutFunc func(userID snowflake.ID) bool
+	"livetranscribebot/speech"
+)
 
 // optedOutOfCaptions checks speakers against the server's no-captions role.
 // Everyone is captioned unless they have that role.
@@ -17,9 +16,9 @@ type optOutFunc func(userID snowflake.ID) bool
 // is given the role mid-call (Discord tells the bot about role changes through
 // the Server Members intent), and the role is read from settings each time in
 // case an admin changes it mid-call.
-func optedOutOfCaptions(caches cache.Caches, serverID snowflake.ID) optOutFunc {
+func (b *Bot) optedOutOfCaptions(caches cache.Caches, serverID snowflake.ID) speech.OptOutFunc {
 	return func(userID snowflake.ID) bool {
-		roleID, roleSet := settings.NoCaptionsRole(serverID)
+		roleID, roleSet := b.settings.NoCaptionsRole(serverID)
 		if !roleSet {
 			// Captions can't start without the role being set, but if an
 			// admin's settings file were edited by hand mid-call, nobody has

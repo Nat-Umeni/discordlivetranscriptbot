@@ -1,4 +1,6 @@
-package main
+// Package speech turns people's voices into text: the speech model, and a
+// transcriber per call that feeds each speaker's audio through it.
+package speech
 
 import (
 	"fmt"
@@ -7,16 +9,16 @@ import (
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 )
 
-// The chosen model (milestone 1 step 5b): NVIDIA's Nemotron speech streaming
-// 0.6b, 560 ms chunks, int8. On a casual recording it gave the best captions of
+// DefaultModelDir is the speech model the bot uses: NVIDIA's Nemotron speech
+// streaming 0.6b, 560 ms chunks, int8. On a casual recording it gave the best captions of
 // five models tested, with punctuation and capitals built in, at ~4.9x real
 // time on 4 threads. It runs entirely locally; nothing is sent anywhere.
-const defaultModelDir = "models/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25"
+const DefaultModelDir = "models/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25"
 
-// newRecogniser loads the speech model once. It's the heavy part (~650 MB on
+// NewRecogniser loads the speech model once. It's the heavy part (~650 MB on
 // disk), so the bot shares one recogniser and gives each speaker their own
 // stream.
-func newRecogniser(modelDir string) (*sherpa.OnlineRecognizer, error) {
+func NewRecogniser(modelDir string) (*sherpa.OnlineRecognizer, error) {
 	config := sherpa.OnlineRecognizerConfig{}
 
 	// The audio format the model expects. Every sherpa-onnx model uses these.

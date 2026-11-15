@@ -1,4 +1,4 @@
-package main
+package captionbot
 
 import (
 	"errors"
@@ -7,11 +7,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"unicode/utf8"
 
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/handler"
 	"github.com/disgoorg/snowflake/v2"
+
+	"livetranscribebot/captions"
 )
 
 // "Fix caption" lets note-takers correct a finished caption: change the words,
@@ -44,31 +45,20 @@ const (
 	tagsField    = "tags"
 
 	maxSpeakerLength = 80
-
-	// Discord's limit for one message.
-	maxMessageLength = 2000
-
-	// Starts the line under a fixed caption, e.g. "-# ✏️ fixed by Jo".
-	fixedByPrefix = "-# ✏️ fixed by "
 )
 
 // captionFixMu makes fixes happen one at a time, so two note-takers saving the
 // same caption at once can't both pass the "has it changed?" check.
 var captionFixMu sync.Mutex
 
-var (
-	errBlankCaption   = errors.New("speaker and caption can't be blank")
-	errCaptionTooLong = errors.New("too long for one Discord message")
-)
-
 // onFixCaption opens the popup for a caption someone right-clicked.
-func onFixCaption(data discord.MessageCommandInteractionData, e *handler.CommandEvent) error {
+func (b *Bot) onFixCaption(data discord.MessageCommandInteractionData, e *handler.CommandEvent) error {
 	guildID := e.GuildID()
 	if guildID == nil {
 		return createHiddenMessageForCommandCaller(e, "I only work inside a server, run this command in one.")
 	}
 
-	if !canManageTranscription(e, *guildID) {
+	if !b.canManageTranscription(e, *guildID) {
 		return createHiddenMessageForCommandCaller(e, "Only note-takers and moderators can fix captions.")
 	}
 
@@ -80,11 +70,11 @@ func onFixCaption(data discord.MessageCommandInteractionData, e *handler.Command
 
 	// A caption still growing would be overwritten by the next words, and
 	// would overwrite the fix.
-	if strings.HasSuffix(target.Content, speakingLine) {
+	if strings.HasSuffix(target.Content, captions.SpeakingLine) {
 		return createHiddenMessageForCommandCaller(e, "They're still talking. Fix it once the caption's finished (the \"speaking…\" line goes when it is).")
 	}
 
-	speaker, text, ok := parseCaption(target.Content)
+	speaker, text, ok := captions.Parse(target.Content)
 	if !ok {
 		return createHiddenMessageForCommandCaller(e, notACaption)
 	}
@@ -108,7 +98,7 @@ func fixCaptionPopup(channelID, messageID snowflake.ID, edited int64, speaker, t
 	tags.Required = false
 
 	captionLabel := discord.NewLabel("Caption", discord.NewParagraphTextInput(captionField).
-		WithValue(text).WithRequired(true).WithMaxLength(maxCaptionTextLength))
+		WithValue(text).WithRequired(true).WithMaxLength(captions.MaxTextLength))
 	captionLabel.Description = "Fix any words, and type tags like [laughs] anywhere."
 
 	speakerLabel := discord.NewLabel("Speaker", discord.NewShortTextInput(speakerField).
@@ -125,7 +115,7 @@ func fixCaptionPopup(channelID, messageID snowflake.ID, edited int64, speaker, t
 }
 
 // onFixCaptionSubmit saves a fix from the popup.
-func onFixCaptionSubmit(e *handler.ModalEvent) error {
+func (b *Bot) onFixCaptionSubmit(e *handler.ModalEvent) error {
 	// Answer straight away with a hidden "thinking…": fetching and editing the
 	// caption can take longer than the 3 seconds Discord allows.
 	if err := e.DeferCreateMessage(true); err != nil {
@@ -141,7 +131,7 @@ func onFixCaptionSubmit(e *handler.ModalEvent) error {
 		return answer("I only work inside a server.")
 	}
 	// Checked again: someone's roles can change while the popup is open.
-	if !memberCanManageTranscription(e.Member(), *guildID) {
+	if !b.memberCanManageTranscription(e.Member(), *guildID) {
 		return answer("Only note-takers and moderators can fix captions.")
 	}
 
@@ -155,13 +145,13 @@ func onFixCaptionSubmit(e *handler.ModalEvent) error {
 
 	speaker := e.Data.Text(speakerField)
 	text := e.Data.Text(captionField)
-	content, err := fixedCaption(speaker, text, e.Data.StringValues(tagsField), e.Member().EffectiveName())
-	if errors.Is(err, errBlankCaption) {
+	content, err := captions.Fixed(speaker, text, e.Data.StringValues(tagsField), e.Member().EffectiveName())
+	if errors.Is(err, captions.ErrBlank) {
 		return answer("The speaker and caption can't be blank, so I didn't save that.")
 	}
 	if err != nil {
 		return answer(fmt.Sprintf("That's too long for one Discord message (%d characters), so I didn't save it. Here's what you wrote, to shorten and try again:\n%s",
-			maxMessageLength, quote(text)))
+			captions.MaxMessageLength, quote(text)))
 	}
 
 	captionFixMu.Lock()
@@ -179,83 +169,13 @@ func onFixCaptionSubmit(e *handler.ModalEvent) error {
 			quote(current.Content) + "\nRun Fix caption again to change it.")
 	}
 
-	_, err = e.Client().Rest.UpdateMessage(channelID, messageID, discord.MessageUpdate{Content: &content, AllowedMentions: noPings})
+	_, err = e.Client().Rest.UpdateMessage(channelID, messageID, discord.MessageUpdate{Content: &content, AllowedMentions: captions.NoPings})
 	if err != nil {
 		log.Printf("couldn't save a caption fix: %v", err)
 		return answer("I couldn't save that, try again in a moment. Here's what you wrote:\n" + quote(text))
 	}
 
 	return answer("Fixed ✓")
-}
-
-// fixedCaption is a caption rewritten by a note-taker:
-//
-//	**Priya:** that's great [laughs]
-//	-# ✏️ fixed by Jo
-//
-// Picked tone tags go at the end. Everyone's text shows exactly as typed
-// (markdown is escaped, as in live captions).
-func fixedCaption(speaker, text string, tags []string, fixer string) (string, error) {
-	speaker = strings.TrimSpace(speaker)
-	text = strings.TrimSpace(text)
-	if speaker == "" || text == "" {
-		return "", errBlankCaption
-	}
-	if len(tags) > 0 {
-		text += " " + strings.Join(tags, " ")
-	}
-
-	content := fmt.Sprintf("**%s:** %s\n%s%s", escapeMarkdown(speaker), escapeMarkdown(text), fixedByPrefix, escapeMarkdown(fixer))
-	if utf8.RuneCountInString(content) > maxMessageLength {
-		return "", errCaptionTooLong
-	}
-	return content, nil
-}
-
-// parseCaption reads the speaker and text back out of a caption message
-// ("**Sam:** text", maybe with a "fixed by" line under it), so the popup can
-// be pre-filled. ok is false for anything that isn't a caption, like the
-// thread's opening post or a notice.
-func parseCaption(content string) (speaker, text string, ok bool) {
-	if i := strings.LastIndex(content, "\n"+fixedByPrefix); i >= 0 {
-		content = content[:i]
-	}
-	if !strings.HasPrefix(content, "**") {
-		return "", "", false
-	}
-	end := strings.Index(content, ":** ")
-	if end < 0 {
-		return "", "", false
-	}
-
-	speaker = unescapeMarkdown(content[len("**"):end])
-	text = unescapeMarkdown(content[end+len(":** "):])
-	if speaker == "" {
-		return "", "", false
-	}
-	return speaker, text, true
-}
-
-// unescapeMarkdown undoes escapeMarkdown, so the popup shows "xX_Sam_Xx", not
-// "xX\_Sam\_Xx".
-func unescapeMarkdown(text string) string {
-	var out strings.Builder
-	escaped := false
-	for _, r := range text {
-		if !escaped && r == '\\' {
-			escaped = true
-			continue
-		}
-		if escaped && !strings.ContainsRune("\\*_~|`", r) {
-			out.WriteRune('\\') // a backslash that wasn't escaping anything
-		}
-		out.WriteRune(r)
-		escaped = false
-	}
-	if escaped {
-		out.WriteRune('\\')
-	}
-	return out.String()
 }
 
 // editedMark is when a message was last edited, as a number for the popup's

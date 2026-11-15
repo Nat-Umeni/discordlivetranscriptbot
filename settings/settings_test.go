@@ -1,6 +1,7 @@
-package main
+package settings
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,7 @@ import (
 )
 
 func TestLoadSettingsMissingFileStartsEmpty(t *testing.T) {
-	store, err := loadSettings(filepath.Join(t.TempDir(), "settings.json"))
+	store, err := Load(filepath.Join(t.TempDir(), "settings.json"))
 	if err != nil {
 		t.Fatalf("a missing file should not be an error, got %v", err)
 	}
@@ -22,7 +23,7 @@ func TestLoadSettingsMissingFileStartsEmpty(t *testing.T) {
 
 func TestSettingsSurviveSaveAndReload(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
-	store, err := loadSettings(path)
+	store, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +42,7 @@ func TestSettingsSurviveSaveAndReload(t *testing.T) {
 		t.Errorf("file should hold the role ID as a string, got:\n%s", data)
 	}
 
-	reloaded, err := loadSettings(path)
+	reloaded, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +56,7 @@ func TestSettingsSurviveSaveAndReload(t *testing.T) {
 }
 
 func TestSetNoteTakerRoleReplacesTheOldRole(t *testing.T) {
-	store, _ := loadSettings(filepath.Join(t.TempDir(), "settings.json"))
+	store, _ := Load(filepath.Join(t.TempDir(), "settings.json"))
 	_ = store.SetNoteTakerRole(1, 10)
 	_ = store.SetNoteTakerRole(1, 20)
 
@@ -67,7 +68,7 @@ func TestSetNoteTakerRoleReplacesTheOldRole(t *testing.T) {
 
 func TestLoadSettingsReadError(t *testing.T) {
 	// a directory exists but can't be read as a file, which isn't "file missing"
-	if _, err := loadSettings(t.TempDir()); err == nil {
+	if _, err := Load(t.TempDir()); err == nil {
 		t.Fatal("reading a directory as the settings file should fail")
 	}
 }
@@ -78,7 +79,7 @@ func TestLoadSettingsBrokenJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := loadSettings(path)
+	_, err := Load(path)
 	if err == nil {
 		t.Fatal("broken JSON should be an error, not silently start empty")
 	}
@@ -89,7 +90,7 @@ func TestLoadSettingsBrokenJSON(t *testing.T) {
 
 func TestSetNoteTakerRoleWriteError(t *testing.T) {
 	// the folder doesn't exist, so the file can't be written
-	store, _ := loadSettings(filepath.Join(t.TempDir(), "missing-folder", "settings.json"))
+	store, _ := Load(filepath.Join(t.TempDir(), "missing-folder", "settings.json"))
 	if err := store.SetNoteTakerRole(1, 2); err == nil {
 		t.Fatal("expected an error when the file can't be written")
 	}
@@ -98,7 +99,7 @@ func TestSetNoteTakerRoleWriteError(t *testing.T) {
 // Commands run concurrently (middleware.Go). Run with -race: without the mutex
 // this fails with "concurrent map writes" or a data race report.
 func TestSettingsConcurrentAccess(t *testing.T) {
-	store, _ := loadSettings(filepath.Join(t.TempDir(), "settings.json"))
+	store, _ := Load(filepath.Join(t.TempDir(), "settings.json"))
 
 	var wg sync.WaitGroup
 	for i := range 50 {
@@ -117,7 +118,7 @@ func TestSettingsConcurrentAccess(t *testing.T) {
 
 func TestCaptionsChannelSurvivesSaveAndReload(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
-	store, err := loadSettings(path)
+	store, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +142,7 @@ func TestCaptionsChannelSurvivesSaveAndReload(t *testing.T) {
 		t.Errorf("an unset role should be left out of the file, got:\n%s", data)
 	}
 
-	reloaded, err := loadSettings(path)
+	reloaded, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +158,7 @@ func TestCaptionsChannelSurvivesSaveAndReload(t *testing.T) {
 // Each setter must only change its own setting. Replacing the whole entry
 // would quietly wipe the other one.
 func TestSettingOneThingKeepsTheOther(t *testing.T) {
-	store, err := loadSettings(filepath.Join(t.TempDir(), "settings.json"))
+	store, err := Load(filepath.Join(t.TempDir(), "settings.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +183,7 @@ func TestSettingOneThingKeepsTheOther(t *testing.T) {
 }
 
 func TestSetCaptionsChannelWriteError(t *testing.T) {
-	store, err := loadSettings(filepath.Join(t.TempDir(), "missing-folder", "settings.json"))
+	store, err := Load(filepath.Join(t.TempDir(), "missing-folder", "settings.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +194,7 @@ func TestSetCaptionsChannelWriteError(t *testing.T) {
 
 func TestNoCaptionsRoleSurvivesSaveAndReloadAndKeepsTheOthers(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
-	store, err := loadSettings(path)
+	store, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +213,7 @@ func TestNoCaptionsRoleSurvivesSaveAndReloadAndKeepsTheOthers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reloaded, err := loadSettings(path)
+	reloaded, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,11 +229,31 @@ func TestNoCaptionsRoleSurvivesSaveAndReloadAndKeepsTheOthers(t *testing.T) {
 }
 
 func TestSetNoCaptionsRoleWriteError(t *testing.T) {
-	store, err := loadSettings(filepath.Join(t.TempDir(), "missing-folder", "settings.json"))
+	store, err := Load(filepath.Join(t.TempDir(), "missing-folder", "settings.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SetNoCaptionsRole(1, 2); err == nil {
 		t.Fatal("expected an error when the settings file can't be written")
+	}
+}
+
+// Encoding these settings can't fail, but if it ever did, saving reports it
+// rather than writing a broken file.
+func TestSaveWhenEncodingFails(t *testing.T) {
+	realMarshal := marshalSettings
+	t.Cleanup(func() { marshalSettings = realMarshal })
+	marshalSettings = func(any, string, string) ([]byte, error) { return nil, errors.New("can't encode") }
+
+	path := filepath.Join(t.TempDir(), "settings.json")
+	store, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetNoteTakerRole(1, 2); err == nil {
+		t.Fatal("want the encoding error back")
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Error("nothing should be written when encoding fails")
 	}
 }

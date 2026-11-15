@@ -1,4 +1,4 @@
-package main
+package speech
 
 import (
 	"os"
@@ -10,8 +10,25 @@ import (
 )
 
 // The model isn't in git (~650 MB, gitignored), so these tests skip if it
-// hasn't been downloaded. See CLAUDE.md milestone 1 step 5b for the link.
-const testModelDir = defaultModelDir
+// hasn't been downloaded. Download and unpack it into models/:
+// https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25.tar.bz2
+//
+// Go runs these tests inside speech/, but models/ is at the project root (next
+// to go.mod), so the path is built from there.
+var testModelDir = filepath.Join(projectRoot(), DefaultModelDir)
+
+// projectRoot is the folder holding go.mod, found by walking up from the
+// folder the tests run in.
+func projectRoot() string {
+	dir, _ := os.Getwd()
+	for dir != filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		dir = filepath.Dir(dir)
+	}
+	return dir
+}
 
 func needModel(t *testing.T) {
 	t.Helper()
@@ -20,8 +37,8 @@ func needModel(t *testing.T) {
 	}
 }
 
-// transcribe runs a whole WAV file through a fresh stream, the way step 3 will
-// feed live audio, and returns the recognised text.
+// transcribe runs a whole WAV file through a fresh stream, the way the
+// transcriber feeds live audio, and returns the recognised text.
 func transcribe(t *testing.T, recogniser *sherpa.OnlineRecognizer, wavPath string) string {
 	t.Helper()
 	wave := sherpa.ReadWave(wavPath)
@@ -48,7 +65,7 @@ func transcribe(t *testing.T, recogniser *sherpa.OnlineRecognizer, wavPath strin
 func TestRecogniserTranscribesTheSampleRecordings(t *testing.T) {
 	needModel(t)
 
-	recogniser, err := newRecogniser(testModelDir)
+	recogniser, err := NewRecogniser(testModelDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +104,7 @@ func TestRecogniserTranscribesTheSampleRecordings(t *testing.T) {
 }
 
 func TestRecogniserBadModelFolderIsAnError(t *testing.T) {
-	recogniser, err := newRecogniser(filepath.Join(t.TempDir(), "no-model-here"))
+	recogniser, err := NewRecogniser(filepath.Join(t.TempDir(), "no-model-here"))
 	if err == nil {
 		sherpa.DeleteOnlineRecognizer(recogniser)
 		t.Fatal("a missing model should return an error, not a recogniser")

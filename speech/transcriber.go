@@ -1,4 +1,4 @@
-package main
+package speech
 
 import (
 	"errors"
@@ -11,6 +11,10 @@ import (
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 	"gopkg.in/hraban/opus.v2"
 )
+
+// newDecoder makes a speaker's Opus decoder. It's a variable only so a test
+// can make it fail: with the fixed settings used here it never does.
+var newDecoder = opus.NewDecoder
 
 const (
 	quietLimit      = 1200 * time.Millisecond
@@ -31,12 +35,12 @@ type speakerStream struct {
 	idle      bool
 }
 
-type transcriber struct {
+type Transcriber struct {
 	mu         sync.Mutex
 	recogniser *sherpa.OnlineRecognizer
 	speakers   map[uint32]*speakerStream
-	out        captionOutput
-	optedOut   optOutFunc
+	out        Output
+	optedOut   OptOutFunc
 	now        func() time.Time
 
 	// Packets from streams Discord hasn't named yet, kept undecoded until we
@@ -53,10 +57,10 @@ type transcriber struct {
 
 // Compile-time check that transcriber has all three methods disgo needs, so
 // it can be passed to SetOpusFrameReceiver.
-var _ voice.OpusFrameReceiver = (*transcriber)(nil)
+var _ voice.OpusFrameReceiver = (*Transcriber)(nil)
 
-func newTranscriber(recogniser *sherpa.OnlineRecognizer, out captionOutput, optedOut optOutFunc) *transcriber {
-	t := &transcriber{
+func NewTranscriber(recogniser *sherpa.OnlineRecognizer, out Output, optedOut OptOutFunc) *Transcriber {
+	t := &Transcriber{
 		recogniser:   recogniser,
 		out:          out,
 		optedOut:     optedOut,
@@ -77,7 +81,7 @@ func newTranscriber(recogniser *sherpa.OnlineRecognizer, out captionOutput, opte
 // runQuietTimer checks for quiet speakers every quietCheckEvery. Discord sends
 // no packets while someone is silent, so without this their last sentence
 // would sit unfinished until they next spoke, maybe minutes later.
-func (t *transcriber) runQuietTimer() {
+func (t *Transcriber) runQuietTimer() {
 	ticker := time.NewTicker(quietCheckEvery)
 	defer ticker.Stop()
 
@@ -93,7 +97,7 @@ func (t *transcriber) runQuietTimer() {
 
 // flushQuiet finishes the sentence of everyone who's been quiet for at least
 // quietLimit.
-func (t *transcriber) flushQuiet() {
+func (t *Transcriber) flushQuiet() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -109,7 +113,7 @@ func (t *transcriber) flushQuiet() {
 
 // finishSentence ends this speaker's current sentence and reports it as final.
 // Called while t.mu is already locked, so it mustn't lock again.
-func (t *transcriber) finishSentence(speaker *speakerStream) {
+func (t *Transcriber) finishSentence(speaker *speakerStream) {
 	// The model works in 560 ms chunks and waits for a full one, so the last
 	// half-second of words would never be processed. 0.8 s of silence pushes
 	// them through.
@@ -120,7 +124,7 @@ func (t *transcriber) finishSentence(speaker *speakerStream) {
 
 	text := t.recogniser.GetResult(speaker.stream).Text
 	if text != "" {
-		t.out.caption(speaker.userID, text, true)
+		t.out.Caption(speaker.userID, text, true)
 	}
 
 	// Start a fresh sentence for when they next talk.
@@ -131,7 +135,7 @@ func (t *transcriber) finishSentence(speaker *speakerStream) {
 
 // report asks the model what this speaker has said so far and passes on any
 // new text. Called while t.mu is already locked, so it mustn't lock again.
-func (t *transcriber) report(speaker *speakerStream) {
+func (t *Transcriber) report(speaker *speakerStream) {
 	// Catch up: run the model on every full chunk of audio that's waiting.
 	for t.recogniser.IsReady(speaker.stream) {
 		t.recogniser.Decode(speaker.stream)
@@ -142,14 +146,14 @@ func (t *transcriber) report(speaker *speakerStream) {
 
 	// Only pass it on if there's something to say and it's not a repeat.
 	if text != "" && text != speaker.lastText {
-		t.out.caption(speaker.userID, text, false)
+		t.out.Caption(speaker.userID, text, false)
 		speaker.lastText = text
 	}
 
 	// The model thinks the sentence has ended.
 	if t.recogniser.IsEndpoint(speaker.stream) {
 		if text != "" {
-			t.out.caption(speaker.userID, text, true)
+			t.out.Caption(speaker.userID, text, true)
 		}
 		// Start a fresh sentence: clear the model's text and ours.
 		t.recogniser.Reset(speaker.stream)
@@ -160,7 +164,7 @@ func (t *transcriber) report(speaker *speakerStream) {
 // ReceiveOpusFrame is called by disgo for every 20 ms packet of someone
 // talking. Nobody who has opted out is ever decoded or captioned; everyone else's
 // packet goes into their stream and any new text is reported.
-func (t *transcriber) ReceiveOpusFrame(userID snowflake.ID, packet *voice.Packet) error {
+func (t *Transcriber) ReceiveOpusFrame(userID snowflake.ID, packet *voice.Packet) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -207,7 +211,7 @@ func (t *transcriber) ReceiveOpusFrame(userID snowflake.ID, packet *voice.Packet
 
 // skip stops captioning someone who has opted out. Called while t.mu is
 // already locked.
-func (t *transcriber) skip(ssrc uint32, userID snowflake.ID) {
+func (t *Transcriber) skip(ssrc uint32, userID snowflake.ID) {
 	// If they were mid-sentence when they got the role, what they'd already
 	// said is finished as normal; nothing after it is captioned.
 	if speaker, found := t.speakers[ssrc]; found {
@@ -215,20 +219,20 @@ func (t *transcriber) skip(ssrc uint32, userID snowflake.ID) {
 	}
 
 	if !t.skipReported[userID] {
-		t.out.notCaptioned(userID)
+		t.out.NotCaptioned(userID)
 		t.skipReported[userID] = true
 	}
 }
 
 // feed decodes one packet into its speaker's stream and reports any new text.
 // Called while t.mu is already locked.
-func (t *transcriber) feed(ssrc uint32, userID snowflake.ID, data []byte) error {
+func (t *Transcriber) feed(ssrc uint32, userID snowflake.ID, data []byte) error {
 	// Find this stream's speaker, keyed by stream number (SSRC).
 	speaker, found := t.speakers[ssrc]
 	if !found {
 		// Discord sends 48 kHz stereo; this makes libopus hand back 16 kHz
 		// mono, which is what the model wants.
-		decoder, err := opus.NewDecoder(16000, 1)
+		decoder, err := newDecoder(16000, 1)
 		if err != nil {
 			return err
 		}
@@ -258,7 +262,7 @@ func (t *transcriber) feed(ssrc uint32, userID snowflake.ID, data []byte) error 
 
 // CleanupUser is called by disgo when someone leaves the voice channel: their
 // last sentence is finished and their stream freed.
-func (t *transcriber) CleanupUser(userID snowflake.ID) {
+func (t *Transcriber) CleanupUser(userID snowflake.ID) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -274,7 +278,7 @@ func (t *transcriber) CleanupUser(userID snowflake.ID) {
 // Close is called by disgo when the voice connection closes (/transcribe stop,
 // or the bot being disconnected): everyone's last sentence is finished and all
 // streams freed.
-func (t *transcriber) Close() {
+func (t *Transcriber) Close() {
 	// Once only: closing done a second time would crash.
 	t.closeOnce.Do(func() {
 		close(t.done) // stops the quiet timer
@@ -290,13 +294,13 @@ func (t *transcriber) Close() {
 		// Everyone's last sentence has gone out, so the output can finish up
 		// (the captions thread sends whatever's left). Outside the lock: that
 		// may take a moment, and nothing here needs protecting any more.
-		t.out.closed()
+		t.out.Closed()
 	})
 }
 
 // dropSpeaker finishes this speaker's sentence, frees their stream and forgets
 // them. Called while t.mu is already locked.
-func (t *transcriber) dropSpeaker(ssrc uint32, speaker *speakerStream) {
+func (t *Transcriber) dropSpeaker(ssrc uint32, speaker *speakerStream) {
 	// idle means it's already been finished and wiped: nothing left to say.
 	if !speaker.idle {
 		t.finishSentence(speaker)

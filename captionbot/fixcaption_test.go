@@ -1,4 +1,4 @@
-package main
+package captionbot
 
 import (
 	"context"
@@ -14,73 +14,11 @@ import (
 	"github.com/disgoorg/disgo/handler"
 	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
+
+	"livetranscribebot/captions"
 )
 
 // ---------- the text side: reading and writing captions ----------
-
-func TestParseCaption(t *testing.T) {
-	tests := []struct {
-		why           string
-		content       string
-		speaker, text string
-		ok            bool
-	}{
-		{"a finished caption", "**Sam:** So I rang him.", "Sam", "So I rang him.", true},
-		{"escaped name back to how it's typed", `**xX\_Sam\_Xx:** hi \*there\*`, "xX_Sam_Xx", "hi *there*", true},
-		{"a fixed caption: the fixed-by line isn't part of the text", "**Priya:** that's great [laughs]\n-# ✏️ fixed by Jo", "Priya", "that's great [laughs]", true},
-		{"a typed message", "**Jo (typed):** can you hear me", "Jo (typed)", "can you hear me", true},
-		{"several lines", "**Sam:** one\ntwo", "Sam", "one\ntwo", true},
-		{"the thread's opening post", "📝 **Live captions: Weekly**\nI'm captioning…", "", "", false},
-		{"the opt-out notice", "*[Jo isn't being captioned]*", "", "", false},
-		{"no name", "**:** hello", "", "", false},
-		{"bold but not a caption", "**Important** read this", "", "", false},
-		{"plain text", "hello", "", "", false},
-	}
-	for _, test := range tests {
-		speaker, text, ok := parseCaption(test.content)
-		if speaker != test.speaker || text != test.text || ok != test.ok {
-			t.Errorf("%s: got (%q, %q, %v), want (%q, %q, %v)", test.why, speaker, text, ok, test.speaker, test.text, test.ok)
-		}
-	}
-}
-
-func TestFixedCaption(t *testing.T) {
-	got, err := fixedCaption("  Priya ", " that's great ", []string{"[laughs]", "[sarcastic]"}, "Jo")
-	if want := "**Priya:** that's great [laughs] [sarcastic]\n-# ✏️ fixed by Jo"; err != nil || got != want {
-		t.Errorf("got (%q, %v), want %q", got, err, want)
-	}
-
-	// Names and text show as typed, and it reads back to the same thing.
-	got, _ = fixedCaption("xX_Sam_Xx", "a *b*", nil, "Jo_")
-	if want := `**xX\_Sam\_Xx:** a \*b\*` + "\n" + `-# ✏️ fixed by Jo\_`; got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-	if speaker, text, ok := parseCaption(got); !ok || speaker != "xX_Sam_Xx" || text != "a *b*" {
-		t.Errorf("a fixed caption should read back as typed, got (%q, %q, %v)", speaker, text, ok)
-	}
-
-	if _, err := fixedCaption("  ", "hi", nil, "Jo"); !errors.Is(err, errBlankCaption) {
-		t.Errorf("a blank speaker should be refused, got %v", err)
-	}
-	if _, err := fixedCaption("Sam", " \n ", nil, "Jo"); !errors.Is(err, errBlankCaption) {
-		t.Errorf("a blank caption should be refused, got %v", err)
-	}
-	if _, err := fixedCaption("Sam", strings.Repeat("x", maxMessageLength), nil, "Jo"); !errors.Is(err, errCaptionTooLong) {
-		t.Errorf("a caption over Discord's limit should be refused, got %v", err)
-	}
-}
-
-func TestUnescapeMarkdownUndoesEscapeMarkdown(t *testing.T) {
-	for _, text := range []string{"plain", `a\b`, "x_y*z~w|v`u", `trailing\`, `\\`, "[laughs] 50% *cheers*"} {
-		if got := unescapeMarkdown(escapeMarkdown(text)); got != text {
-			t.Errorf("round trip of %q gave %q", text, got)
-		}
-	}
-	// A backslash that isn't escaping anything is left alone.
-	if got := unescapeMarkdown(`a\b \`); got != `a\b \` {
-		t.Errorf("got %q", got)
-	}
-}
 
 func TestEditedMark(t *testing.T) {
 	if got := editedMark(discord.Message{}); got != 0 {
@@ -115,7 +53,7 @@ func fixCaptionCommandJSON(authorID snowflake.ID, content string) string {
 func openFixCaption(t *testing.T, env *testEnv, who caller, authorID snowflake.ID, content string) *replies {
 	t.Helper()
 	event, sent := env.command(t, who, fixCaptionCommandJSON(authorID, content))
-	if err := onFixCaption(event.MessageCommandInteractionData(), event); err != nil {
+	if err := env.bot.onFixCaption(event.MessageCommandInteractionData(), event); err != nil {
 		t.Fatal(err)
 	}
 	return sent
@@ -124,7 +62,7 @@ func openFixCaption(t *testing.T, env *testEnv, who caller, authorID snowflake.I
 func TestFixCaptionOpensAPrefilledPopup(t *testing.T) {
 	for _, who := range []caller{moderator, noteTaker} {
 		env := newTestEnv(t)
-		_ = settings.SetNoteTakerRole(serverID, noteTakerRoleID)
+		_ = env.bot.settings.SetNoteTakerRole(serverID, noteTakerRoleID)
 
 		sent := openFixCaption(t, env, who, botID, `**xX\_Sam\_Xx:** so I rang him`+"\n-# ✏️ fixed by Jo")
 
@@ -168,7 +106,7 @@ func TestFixCaptionRefusals(t *testing.T) {
 		{"not a note-taker or moderator", plainMember, botID, "**Sam:** hi", "Only note-takers and moderators can fix captions."},
 		{"someone else's message", moderator, otherMemberID, "**Sam:** hi", "That isn't one of my captions."},
 		{"the bot's opening post", moderator, botID, "📝 **Live captions: x**", "That isn't one of my captions."},
-		{"still being spoken", moderator, botID, "**Sam:** so I" + speakingLine, "They're still talking."},
+		{"still being spoken", moderator, botID, "**Sam:** so I" + captions.SpeakingLine, "They're still talking."},
 	}
 	for _, test := range tests {
 		t.Run(test.why, func(t *testing.T) {
@@ -246,7 +184,7 @@ func TestFixCaptionSaves(t *testing.T) {
 	putCaption(env, "**Sam:** that's grate", captionEditedAt)
 	event, responded := fixSubmit(t, env, discord.PermissionManageChannels, "Priya", "that's great", []string{"[laughs]"})
 
-	if err := onFixCaptionSubmit(event); err != nil {
+	if err := env.bot.onFixCaptionSubmit(event); err != nil {
 		t.Fatal(err)
 	}
 
@@ -267,7 +205,7 @@ func TestFixCaptionDoesntOverwriteSomeoneElsesFix(t *testing.T) {
 	putCaption(env, "**Jo:** fixed already\n-# ✏️ fixed by Jo", captionEditedAt.Add(time.Second))
 	event, responded := fixSubmit(t, env, discord.PermissionManageChannels, "Priya", "mine", nil)
 
-	if err := onFixCaptionSubmit(event); err != nil {
+	if err := env.bot.onFixCaptionSubmit(event); err != nil {
 		t.Fatal(err)
 	}
 
@@ -288,7 +226,7 @@ func TestFixCaptionSubmitRefusals(t *testing.T) {
 	}{
 		{"lost their role while the popup was open", 0, "Priya", "hi", nil, "Only note-takers and moderators can fix captions."},
 		{"blank speaker", discord.PermissionManageChannels, " ", "hi", nil, "can't be blank"},
-		{"too long", discord.PermissionManageChannels, "Priya", strings.Repeat("x", maxMessageLength), nil, "That's too long for one Discord message"},
+		{"too long", discord.PermissionManageChannels, "Priya", strings.Repeat("x", captions.MaxMessageLength), nil, "That's too long for one Discord message"},
 		{"caption deleted", discord.PermissionManageChannels, "Priya", "hi",
 			func(env *testEnv) { env.rest.getErr = errors.New("unknown message") }, "I couldn't find that caption any more"},
 		{"saving fails", discord.PermissionManageChannels, "Priya", "hi",
@@ -303,7 +241,7 @@ func TestFixCaptionSubmitRefusals(t *testing.T) {
 			}
 			event, responded := fixSubmit(t, env, test.permissions, test.speaker, test.caption, nil)
 
-			if err := onFixCaptionSubmit(event); err != nil {
+			if err := env.bot.onFixCaptionSubmit(event); err != nil {
 				t.Fatal(err)
 			}
 			onlyAnswer(t, env, responded, test.want)
@@ -319,7 +257,7 @@ func TestFixCaptionSubmitWithABrokenCustomID(t *testing.T) {
 	event, responded := fixSubmit(t, env, discord.PermissionManageChannels, "Priya", "hi", nil)
 	event.Vars["message"] = "not-a-number"
 
-	if err := onFixCaptionSubmit(event); err != nil {
+	if err := env.bot.onFixCaptionSubmit(event); err != nil {
 		t.Fatal(err)
 	}
 	onlyAnswer(t, env, responded, "Something went wrong with that popup")
@@ -332,7 +270,7 @@ func TestFixCaptionSubmitWhenThinkingFails(t *testing.T) {
 		return errors.New("discord unreachable")
 	}
 
-	if err := onFixCaptionSubmit(event); err == nil {
+	if err := env.bot.onFixCaptionSubmit(event); err == nil {
 		t.Fatal("the error should be returned so middleware.Go logs it")
 	}
 	if len(env.rest.edits) != 0 {
@@ -343,7 +281,7 @@ func TestFixCaptionSubmitWhenThinkingFails(t *testing.T) {
 // ---------- routing ----------
 
 func TestRouterSendsEverythingToItsHandler(t *testing.T) {
-	r := newRouter()
+	r := New(nil, nil).Router()
 	command := discord.InteractionTypeApplicationCommand
 	for _, test := range []struct {
 		path string
@@ -367,7 +305,7 @@ func TestRouterSendsEverythingToItsHandler(t *testing.T) {
 
 	// Fix caption is registered with Discord, for servers only.
 	found := false
-	for _, c := range commands {
+	for _, c := range Commands {
 		if message, ok := c.(discord.MessageCommandCreate); ok && message.Name == "Fix caption" &&
 			len(message.Contexts) == 1 && message.Contexts[0] == discord.InteractionContextTypeGuild {
 			found = true
@@ -406,7 +344,7 @@ func TestFixCaptionSubmitInDM(t *testing.T) {
 		Ctx:  context.Background(),
 	}
 
-	if err := onFixCaptionSubmit(event); err != nil {
+	if err := env.bot.onFixCaptionSubmit(event); err != nil {
 		t.Fatal(err)
 	}
 	onlyAnswer(t, env, &responded, "I only work inside a server.")

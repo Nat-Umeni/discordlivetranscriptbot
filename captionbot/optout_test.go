@@ -1,4 +1,4 @@
-package main
+package captionbot
 
 import (
 	"path/filepath"
@@ -7,32 +7,31 @@ import (
 	"github.com/disgoorg/disgo/cache"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/snowflake/v2"
+
+	"livetranscribebot/settings"
 )
 
 func TestOptedOutOfCaptions(t *testing.T) {
 	const server, noCaptions, otherRole snowflake.ID = 1, 50, 51
 	const withRole, withoutRole, notCached snowflake.ID = 10, 11, 12
 
-	// Fresh settings for this test, put back afterwards.
-	oldSettings := settings
-	t.Cleanup(func() { settings = oldSettings })
-	var err error
-	settings, err = loadSettings(filepath.Join(t.TempDir(), "settings.json"))
+	store, err := settings.Load(filepath.Join(t.TempDir(), "settings.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	b := New(store, nil)
 
 	caches := cache.New(cache.WithCaches(cache.FlagMembers))
 	caches.AddMember(discord.Member{GuildID: server, User: discord.User{ID: withRole}, RoleIDs: []snowflake.ID{otherRole, noCaptions}})
 	caches.AddMember(discord.Member{GuildID: server, User: discord.User{ID: withoutRole}, RoleIDs: []snowflake.ID{otherRole}})
 
-	optedOut := optedOutOfCaptions(caches, server)
+	optedOut := b.optedOutOfCaptions(caches, server)
 
 	if optedOut(withRole) || optedOut(withoutRole) {
 		t.Error("with no no-captions role picked, nobody has opted out")
 	}
 
-	if err := settings.SetNoCaptionsRole(server, noCaptions); err != nil {
+	if err := store.SetNoCaptionsRole(server, noCaptions); err != nil {
 		t.Fatal(err)
 	}
 	tests := []struct {
@@ -51,7 +50,7 @@ func TestOptedOutOfCaptions(t *testing.T) {
 	}
 
 	// An admin switching the role mid-call takes effect on the next check.
-	if err := settings.SetNoCaptionsRole(server, otherRole); err != nil {
+	if err := store.SetNoCaptionsRole(server, otherRole); err != nil {
 		t.Fatal(err)
 	}
 	if !optedOut(withoutRole) {

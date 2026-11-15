@@ -1,4 +1,4 @@
-package main
+package captionbot
 
 import (
 	"fmt"
@@ -8,6 +8,8 @@ import (
 	"github.com/disgoorg/disgo/bot"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/snowflake/v2"
+
+	"livetranscribebot/captions"
 )
 
 // The permissions the bot needs in the captions channel: see it, post the
@@ -29,11 +31,6 @@ const (
 	maxThreadNameLength  = 100
 	maxVoiceStatusLength = 500
 )
-
-// noPings stops a message notifying anyone. Without it, the "Started by @Sam"
-// line would ping Sam, the no-captions role mention would ping everyone with
-// it, and a title containing @everyone would ping the whole server.
-var noPings = &discord.AllowedMentions{Parse: []discord.AllowedMentionType{}}
 
 // captionsCall is everything the announcements need to know about a call.
 type captionsCall struct {
@@ -62,7 +59,7 @@ func announceCaptions(client *bot.Client, call captionsCall) (*discord.GuildThre
 	// now.
 	notice, err := client.Rest.CreateMessage(call.voiceChannelID, discord.MessageCreate{
 		Content:         callNotice(call, 0),
-		AllowedMentions: noPings,
+		AllowedMentions: captions.NoPings,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("posting the notice in the call's chat: %w", err)
@@ -78,7 +75,7 @@ func announceCaptions(client *bot.Client, call captionsCall) (*discord.GuildThre
 	// a thread for every call, so a link to the channel leaves people
 	// guessing which one is live.
 	linked := callNotice(call, thread.ID())
-	_, err = client.Rest.UpdateMessage(call.voiceChannelID, notice.ID, discord.MessageUpdate{Content: &linked, AllowedMentions: noPings})
+	_, err = client.Rest.UpdateMessage(call.voiceChannelID, notice.ID, discord.MessageUpdate{Content: &linked, AllowedMentions: captions.NoPings})
 	if err != nil {
 		log.Printf("couldn't link the call notice to the captions thread: %v", err)
 	}
@@ -127,7 +124,7 @@ func startCaptionsThread(client *bot.Client, call captionsCall) (*discord.GuildT
 
 	_, err = client.Rest.CreateMessage(thread.ID(), discord.MessageCreate{
 		Content:         captionsIntro(call),
-		AllowedMentions: noPings,
+		AllowedMentions: captions.NoPings,
 	})
 	if err != nil {
 		// Don't leave an empty thread for captions that aren't happening.
@@ -188,7 +185,7 @@ func optOutLine(noCaptionsRoleID snowflake.ID) string {
 // liveStatus is the voice channel status while captions run, e.g.
 // "🔴 Live captions: Weekly Meetup".
 func liveStatus(title string) string {
-	return cutToLength("🔴 Live captions: "+title, maxVoiceStatusLength)
+	return captions.CutToLength("🔴 Live captions: "+title, maxVoiceStatusLength)
 }
 
 // captionsThreadName gives e.g. "📝 Weekly Meetup - 15 Nov 2026". Long titles
@@ -201,15 +198,5 @@ func captionsThreadName(title string, now time.Time) string {
 	// Count in runes (characters), not bytes: the emoji is several bytes but
 	// counts as one character to Discord.
 	room := maxThreadNameLength - len([]rune(prefix)) - len([]rune(suffix))
-	return prefix + cutToLength(title, room) + suffix
-}
-
-// cutToLength shortens text to at most limit characters, ending with "…" if
-// it had to cut.
-func cutToLength(text string, limit int) string {
-	runes := []rune(text)
-	if len(runes) <= limit {
-		return text
-	}
-	return string(runes[:limit-1]) + "…"
+	return prefix + captions.CutToLength(title, room) + suffix
 }

@@ -1,6 +1,7 @@
-package main
+package speech
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -15,8 +16,8 @@ import (
 
 // These tests send the model's own sample recordings through the transcriber
 // as Discord-style Opus packets (one per 20 ms), the same path live audio
-// takes, and check what comes out of onText. They skip if the model isn't
-// downloaded.
+// takes, and check what the transcriber passes to its Output. They skip if
+// the model isn't downloaded.
 
 // Loading the model takes a second or two, so every test shares one. It's
 // never freed: the test program ends straight after.
@@ -30,7 +31,7 @@ func testRecogniser(t *testing.T) *sherpa.OnlineRecognizer {
 	t.Helper()
 	needModel(t)
 	sharedRecogniserOnce.Do(func() {
-		sharedRecogniser, sharedRecogniserErr = newRecogniser(testModelDir)
+		sharedRecogniser, sharedRecogniserErr = NewRecogniser(testModelDir)
 	})
 	if sharedRecogniserErr != nil {
 		t.Fatal(sharedRecogniserErr)
@@ -81,14 +82,14 @@ func sampleWAV(name string) string {
 	return filepath.Join(testModelDir, "test_wavs", name)
 }
 
-// caption is one call to onText.
+// caption is one call to Output.Caption.
 type caption struct {
 	userID snowflake.ID
 	text   string
 	final  bool
 }
 
-// captionLog is a captionOutput that records everything the transcriber
+// captionLog is an Output that records everything the transcriber
 // passes on.
 type captionLog struct {
 	mu           sync.Mutex
@@ -97,19 +98,19 @@ type captionLog struct {
 	closedCount  int
 }
 
-func (l *captionLog) caption(userID snowflake.ID, text string, final bool) {
+func (l *captionLog) Caption(userID snowflake.ID, text string, final bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.lines = append(l.lines, caption{userID, text, final})
 }
 
-func (l *captionLog) notCaptioned(userID snowflake.ID) {
+func (l *captionLog) NotCaptioned(userID snowflake.ID) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.skippedUsers = append(l.skippedUsers, userID)
 }
 
-func (l *captionLog) closed() {
+func (l *captionLog) Closed() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.closedCount++
@@ -153,7 +154,7 @@ func (l *captionLog) finals() []caption {
 // testTranscriber is a transcriber on a fake clock, so tests can say "1.3 s
 // later" without waiting.
 type testTranscriber struct {
-	*transcriber
+	*Transcriber
 	captions *captionLog
 	clock    time.Time
 	optedOut map[snowflake.ID]bool // who has the no-captions role
@@ -166,7 +167,7 @@ func newTestTranscriber(t *testing.T) *testTranscriber {
 	tt := &testTranscriber{
 		// The transcriber only asks while holding its lock, so setOptedOut
 		// changes the map under the same lock.
-		transcriber: newTranscriber(testRecogniser(t), captions, func(userID snowflake.ID) bool { return optedOut[userID] }),
+		Transcriber: NewTranscriber(testRecogniser(t), captions, func(userID snowflake.ID) bool { return optedOut[userID] }),
 		captions:    captions,
 		clock:       time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC),
 		optedOut:    optedOut,
@@ -194,7 +195,7 @@ func (tt *testTranscriber) setOptedOut(userID snowflake.ID, optedOut bool) {
 func nobodyOptedOut(snowflake.ID) bool { return false }
 
 // heldCount is how many packets are held for a stream Discord hasn't named.
-func (tr *transcriber) heldCount(ssrc uint32) int {
+func (tr *Transcriber) heldCount(ssrc uint32) int {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
 	return len(tr.held[ssrc])
@@ -534,7 +535,7 @@ func TestTranscriberCloseFinishesEveryoneAndIgnoresLatePackets(t *testing.T) {
 // without the model downloaded.
 func TestTranscriberWithNobodyTalking(t *testing.T) {
 	captions := &captionLog{}
-	tr := newTranscriber(nil, captions, nobodyOptedOut)
+	tr := NewTranscriber(nil, captions, nobodyOptedOut)
 
 	tr.CleanupUser(7) // joined and left without saying anything
 	tr.flushQuiet()
@@ -687,7 +688,7 @@ func TestTranscriberCaptionsAgainWhenTheRoleIsRemoved(t *testing.T) {
 // No model needed: held packets aren't decoded.
 func TestTranscriberHoldsAtMostOneSecondPerStream(t *testing.T) {
 	captions := &captionLog{}
-	tr := newTranscriber(nil, captions, nobodyOptedOut)
+	tr := NewTranscriber(nil, captions, nobodyOptedOut)
 	defer tr.Close()
 
 	data := []byte{1, 2, 3}
@@ -739,4 +740,23 @@ func TestTranscriberBadHeldPacketDoesntLoseTheRest(t *testing.T) {
 		t.Fatalf("the good packets should still be captioned, got %v", finals)
 	}
 	containsAll(t, finals[0].text, "AFTER EARLY")
+}
+
+// Making a decoder can't fail with the settings used, but if it ever did, the
+// packet's error goes back to disgo (which logs it) and nothing is captioned.
+func TestTranscriberDecoderFailingIsAnError(t *testing.T) {
+	realDecoder := newDecoder
+	t.Cleanup(func() { newDecoder = realDecoder })
+	newDecoder = func(int, int) (*opus.Decoder, error) { return nil, errors.New("no decoder") }
+
+	captions := &captionLog{}
+	tr := NewTranscriber(nil, captions, nobodyOptedOut) // no model: it fails before getting there
+	defer tr.Close()
+
+	if err := tr.ReceiveOpusFrame(42, &voice.Packet{SSRC: 7, Opus: []byte{1}}); err == nil {
+		t.Fatal("want the decoder's error back")
+	}
+	if len(captions.all()) != 0 {
+		t.Error("nothing should be captioned")
+	}
 }
