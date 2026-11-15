@@ -23,6 +23,7 @@ import (
 	"github.com/disgoorg/omit"
 	"github.com/disgoorg/snowflake/v2"
 	_ "github.com/joho/godotenv/autoload"
+	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 )
 
 var commands = []discord.ApplicationCommandCreate{
@@ -68,6 +69,8 @@ var commands = []discord.ApplicationCommandCreate{
 	},
 }
 
+var recogniser *sherpa.OnlineRecognizer
+
 func main() {
 	token := os.Getenv("BOT_TOKEN")
 
@@ -87,6 +90,16 @@ func main() {
 		r.Command("/stop", onTranscribeStop)
 	})
 	r.Command("/captions-setup", onCaptionsSetup)
+
+	recogniser, err = newRecogniser(defaultModelDir)
+	if err != nil {
+		log.Fatalf("failed to setup the new voice recogniser %v", err)
+	}
+
+	// The model is deliberately never freed. On shutdown disgo closes each
+	// transcriber from its own goroutine, *after* client.Close returns, and a
+	// transcriber finishing someone's last sentence would crash if the model
+	// had been freed underneath it. The OS frees it when the bot exits.
 
 	client, err := disgo.New(token,
 		bot.WithGatewayConfigOpts(
@@ -224,8 +237,9 @@ func onTranscribeStart(e *handler.CommandEvent) error {
 		return err
 	}
 
-	// start listening: one WAV file per speaker in recordings/ (milestone 0 test only)
-	voiceConnection.SetOpusFrameReceiver(newWavRecorder("recordings"))
+	// start listening: live captions for each speaker, printed to the terminal
+	// for now (milestone 2 posts them in a thread)
+	voiceConnection.SetOpusFrameReceiver(newTranscriber(recogniser, printCaption))
 
 	// joined, so keep the claim: the session now runs until /transcribe stop
 	joined = true

@@ -5,3 +5,4 @@ settings.json
 recordings/
 *.wav
 models/
+/livetranscribebot

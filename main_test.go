@@ -317,9 +317,13 @@ func TestStartJoinsTheCallersChannel(t *testing.T) {
 	if !conn.selfMute || conn.selfDeaf {
 		t.Errorf("should join muted but NOT deafened (deafened = no audio), got mute=%v deaf=%v", conn.selfMute, conn.selfDeaf)
 	}
-	if _, ok := conn.receiver.(*wavRecorder); !ok {
-		t.Errorf("after joining it should start recording with a wavRecorder, got %T", conn.receiver)
+	// No model is loaded in handler tests (recogniser is nil). That's fine:
+	// the transcriber only touches it once someone talks.
+	tr, ok := conn.receiver.(*transcriber)
+	if !ok {
+		t.Fatalf("after joining it should start captioning with a transcriber, got %T", conn.receiver)
 	}
+	tr.Close() // stops its quiet timer; the real disgo does this when the call ends
 
 	current, running := activeSessions.get(serverID)
 	want := session{StartedBy: callerID, ChannelID: meetingChannelID, Title: "Weekly Meetup"}

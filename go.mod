@@ -7,8 +7,6 @@ require (
 	github.com/disgoorg/godave/golibdave v0.3.0
 	github.com/disgoorg/omit v1.0.0
 	github.com/disgoorg/snowflake/v2 v2.0.3
-	github.com/go-audio/audio v1.0.0
-	github.com/go-audio/wav v1.1.0
 	github.com/joho/godotenv v1.5.1
 	github.com/k2-fsa/sherpa-onnx-go v1.13.8
 	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
@@ -18,7 +16,6 @@ require (
 	github.com/disgoorg/godave v0.3.0 // indirect
 	github.com/disgoorg/godave/libdave v0.3.0 // indirect
 	github.com/disgoorg/json/v2 v2.0.0 // indirect
-	github.com/go-audio/riff v1.0.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/k2-fsa/sherpa-onnx-go-linux v1.13.8 // indirect
 	github.com/k2-fsa/sherpa-onnx-go-macos v1.13.8 // indirect
