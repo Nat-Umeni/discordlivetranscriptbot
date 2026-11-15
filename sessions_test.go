@@ -91,3 +91,22 @@ func TestSessionOnlyOneOfManySimultaneousStartsWins(t *testing.T) {
 		t.Fatalf("%d starts claimed the server, want exactly 1", wins.Load())
 	}
 }
+
+func TestSessionAllIsACopyOfEverySession(t *testing.T) {
+	store := newSessionStore()
+	a := session{StartedBy: 1, ChannelID: 10, Title: "A"}
+	b := session{StartedBy: 2, ChannelID: 20, Title: "B"}
+	store.start(100, a)
+	store.start(200, b)
+
+	all := store.all()
+	if len(all) != 2 || all[100] != a || all[200] != b {
+		t.Fatalf("got %+v, want both sessions", all)
+	}
+
+	// Changing the copy mustn't touch the store.
+	delete(all, 100)
+	if _, running := store.get(100); !running {
+		t.Error("all should return a copy, not the store's own map")
+	}
+}

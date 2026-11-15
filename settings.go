@@ -14,8 +14,17 @@ import (
 // serverSettings is what the bot remembers about one server.
 type serverSettings struct {
 	// The role whose members count as note-takers, picked by an admin with
-	// /captions-setup. The struct tag sets the key name used in settings.json.
-	NoteTakerRoleID snowflake.ID `json:"noteTakerRoleID"`
+	// /captions-setup. The struct tag sets the key name used in settings.json;
+	// omitempty leaves it out of the file while it's not set (0).
+	NoteTakerRoleID snowflake.ID `json:"noteTakerRoleID,omitempty"`
+
+	// The text channel where each call's captions thread is created, also
+	// picked with /captions-setup.
+	CaptionsChannelID snowflake.ID `json:"captionsChannelID,omitempty"`
+
+	// Members with this role are never captioned: the way to opt out. Also
+	// picked with /captions-setup.
+	NoCaptionsRoleID snowflake.ID `json:"noCaptionsRoleID,omitempty"`
 }
 
 // settingsStore holds every server's settings in memory and saves them to a
@@ -67,8 +76,10 @@ func (s *settingsStore) NoteTakerRole(serverID snowflake.ID) (snowflake.ID, bool
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entry, ok := s.servers[serverID]
-	return entry.NoteTakerRoleID, ok
+	// 0 means not set: a server that only has a captions channel saved still
+	// has an entry here, but no role.
+	roleID := s.servers[serverID].NoteTakerRoleID
+	return roleID, roleID != 0
 }
 
 // SetNoteTakerRole remembers a server's note-taker role and saves every
@@ -77,8 +88,64 @@ func (s *settingsStore) SetNoteTakerRole(serverID, roleID snowflake.ID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.servers[serverID] = serverSettings{NoteTakerRoleID: roleID}
+	// Go can't change one field of a struct stored in a map directly, so copy
+	// the server's settings out, change the copy and put it back. Building a
+	// fresh serverSettings instead would wipe the captions channel.
+	entry := s.servers[serverID]
+	entry.NoteTakerRoleID = roleID
+	s.servers[serverID] = entry
 
+	return s.save()
+}
+
+// CaptionsChannel returns the channel picked for a server's captions threads,
+// and false if an admin hasn't picked one yet.
+func (s *settingsStore) CaptionsChannel(serverID snowflake.ID) (snowflake.ID, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	channelID := s.servers[serverID].CaptionsChannelID
+	return channelID, channelID != 0
+}
+
+// SetCaptionsChannel remembers where a server's captions threads go and saves
+// every server's settings to the file.
+func (s *settingsStore) SetCaptionsChannel(serverID, channelID snowflake.ID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry := s.servers[serverID]
+	entry.CaptionsChannelID = channelID
+	s.servers[serverID] = entry
+
+	return s.save()
+}
+
+// NoCaptionsRole returns the role whose members are never captioned, and false
+// if an admin hasn't picked one yet.
+func (s *settingsStore) NoCaptionsRole(serverID snowflake.ID) (snowflake.ID, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	roleID := s.servers[serverID].NoCaptionsRoleID
+	return roleID, roleID != 0
+}
+
+// SetNoCaptionsRole remembers a server's no-captions role and saves every
+// server's settings to the file.
+func (s *settingsStore) SetNoCaptionsRole(serverID, roleID snowflake.ID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry := s.servers[serverID]
+	entry.NoCaptionsRoleID = roleID
+	s.servers[serverID] = entry
+
+	return s.save()
+}
+
+// save writes every server's settings to the file. Callers must hold s.mu.
+func (s *settingsStore) save() error {
 	// MarshalIndent lays the JSON out over several lines so the file is
 	// readable when opened by hand.
 	data, err := json.MarshalIndent(s.servers, "", "  ")

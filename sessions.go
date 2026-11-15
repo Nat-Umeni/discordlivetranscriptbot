@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"sync"
 
 	"github.com/disgoorg/snowflake/v2"
@@ -59,4 +60,13 @@ func (s *sessionStore) remove(serverID snowflake.ID) {
 	defer s.mu.Unlock()
 
 	delete(s.byServer, serverID)
+}
+
+// all returns every running session, keyed by server. It's a copy, so the
+// caller can loop over it without holding the lock.
+func (s *sessionStore) all() map[snowflake.ID]session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return maps.Clone(s.byServer)
 }

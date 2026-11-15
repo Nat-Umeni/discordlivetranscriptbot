@@ -122,15 +122,20 @@ type testTranscriber struct {
 	*transcriber
 	captions *captionLog
 	clock    time.Time
+	optedOut map[snowflake.ID]bool // who has the no-captions role
 }
 
 func newTestTranscriber(t *testing.T) *testTranscriber {
 	t.Helper()
 	captions := &captionLog{}
+	optedOut := map[snowflake.ID]bool{}
 	tt := &testTranscriber{
-		transcriber: newTranscriber(testRecogniser(t), captions.record),
+		// The transcriber only asks while holding its lock, so setOptedOut
+		// changes the map under the same lock.
+		transcriber: newTranscriber(testRecogniser(t), captions.record, func(userID snowflake.ID) bool { return optedOut[userID] }),
 		captions:    captions,
 		clock:       time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC),
+		optedOut:    optedOut,
 	}
 
 	// The quiet timer reads t.now from its own goroutine, so swap it (and
@@ -143,6 +148,22 @@ func newTestTranscriber(t *testing.T) *testTranscriber {
 	// already closed it.
 	t.Cleanup(tt.Close)
 	return tt
+}
+
+// setOptedOut gives someone the no-captions role (true) or takes it away.
+func (tt *testTranscriber) setOptedOut(userID snowflake.ID, optedOut bool) {
+	tt.mu.Lock()
+	defer tt.mu.Unlock()
+	tt.optedOut[userID] = optedOut
+}
+
+func nobodyOptedOut(snowflake.ID) bool { return false }
+
+// heldCount is how many packets are held for a stream Discord hasn't named.
+func (tr *transcriber) heldCount(ssrc uint32) int {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return len(tr.held[ssrc])
 }
 
 // speakerCount is how many streams the transcriber is holding.
@@ -479,7 +500,7 @@ func TestTranscriberCloseFinishesEveryoneAndIgnoresLatePackets(t *testing.T) {
 // without the model downloaded.
 func TestTranscriberWithNobodyTalking(t *testing.T) {
 	captions := &captionLog{}
-	tr := newTranscriber(nil, captions.record)
+	tr := newTranscriber(nil, captions.record, nobodyOptedOut)
 
 	tr.CleanupUser(7) // joined and left without saying anything
 	tr.flushQuiet()
@@ -518,6 +539,7 @@ func TestTranscriberConcurrentUse(t *testing.T) {
 			defer wg.Done()
 			tt.wait(1300 * time.Millisecond)
 			tt.flushQuiet()
+			tt.setOptedOut(userID, i%2 == 0) // someone given and losing the role mid-call
 		}()
 	}
 	wg.Wait()
@@ -526,4 +548,160 @@ func TestTranscriberConcurrentUse(t *testing.T) {
 	if n := tt.speakerCount(); n != 0 {
 		t.Errorf("Close should free every stream, %d left", n)
 	}
+}
+
+func TestTranscriberNeverCaptionsSomeoneWhoOptedOut(t *testing.T) {
+	logs := captureLog(t)
+	tt := newTestTranscriber(t)
+	tt.setOptedOut(42, true)
+
+	tt.say(t, 7, 42, speechPackets(t, sampleWAV("0.wav"))[:100]) // 2 s
+	tt.wait(1300 * time.Millisecond)
+	tt.flushQuiet()
+
+	if lines := tt.captions.all(); len(lines) != 0 {
+		t.Errorf("nothing of theirs should be captioned, got %v", lines)
+	}
+	if tt.speakerCount() != 0 {
+		t.Error("their audio shouldn't even be decoded: no stream should exist")
+	}
+	if n := strings.Count(logs.String(), "not captioning 42"); n != 1 {
+		t.Errorf("should log once that they're skipped, not per packet; logged %d times", n)
+	}
+}
+
+// Discord can send someone's first packets before saying who they are. Those
+// are held, undecoded, and thrown away if it turns out they've opted out.
+func TestTranscriberDropsHeldPacketsFromSomeoneWhoOptedOut(t *testing.T) {
+	tt := newTestTranscriber(t)
+	tt.setOptedOut(42, true)
+	packets := speechPackets(t, sampleWAV("0.wav"))[:100]
+
+	tt.say(t, 7, 0, packets[:25]) // not named yet
+	if got := tt.heldCount(7); got != 25 {
+		t.Fatalf("want 25 packets held while we don't know who it is, got %d", got)
+	}
+	if tt.speakerCount() != 0 {
+		t.Fatal("held packets mustn't be decoded")
+	}
+
+	tt.say(t, 7, 42, packets[25:]) // now Discord says it's 42, who opted out
+	tt.wait(1300 * time.Millisecond)
+	tt.flushQuiet()
+
+	if lines := tt.captions.all(); len(lines) != 0 {
+		t.Errorf("nothing of theirs should be captioned, including the held start, got %v", lines)
+	}
+	if tt.heldCount(7) != 0 || tt.speakerCount() != 0 {
+		t.Error("the held packets should be thrown away")
+	}
+}
+
+func TestTranscriberFinishesTheSentenceWhenSomeoneOptsOutMidway(t *testing.T) {
+	tt := newTestTranscriber(t)
+	packets := speechPackets(t, sampleWAV("0.wav"))
+
+	tt.say(t, 7, 42, packets[:150]) // the first 3 s
+	tt.setOptedOut(42, true)        // given the role mid-sentence
+	tt.say(t, 7, 42, packets[150:]) // the rest of the recording
+
+	finals := tt.captions.finals()
+	if len(finals) != 1 {
+		t.Fatalf("what they said before the role should be finished as one final, got %v", finals)
+	}
+	t.Logf("final: %s", finals[0].text)
+	containsAll(t, finals[0].text, "AFTER EARLY")
+	if strings.Contains(strings.ToUpper(finals[0].text), "BROTHELS") {
+		t.Errorf("words said after they got the role were captioned: %q", finals[0].text)
+	}
+	lines := tt.captions.all()
+	if last := lines[len(lines)-1]; !last.final {
+		t.Errorf("nothing should come after their final, got %v", last)
+	}
+	if tt.speakerCount() != 0 {
+		t.Error("their stream should be freed")
+	}
+}
+
+func TestTranscriberCaptionsAgainWhenTheRoleIsRemoved(t *testing.T) {
+	logs := captureLog(t)
+	tt := newTestTranscriber(t)
+	packets := speechPackets(t, sampleWAV("0.wav"))[:100]
+
+	tt.setOptedOut(42, true)
+	tt.say(t, 7, 42, packets)
+	tt.setOptedOut(42, false)
+	tt.say(t, 7, 42, packets)
+	tt.wait(1300 * time.Millisecond)
+	tt.flushQuiet()
+
+	finals := tt.captions.finals()
+	if len(finals) != 1 {
+		t.Fatalf("want their speech captioned once the role is gone, got %v", finals)
+	}
+	containsAll(t, finals[0].text, "AFTER EARLY")
+
+	// Opting out again is logged again.
+	tt.setOptedOut(42, true)
+	tt.say(t, 7, 42, packets[:5])
+	if n := strings.Count(logs.String(), "not captioning 42"); n != 2 {
+		t.Errorf("want a log each time they opt out, got %d", n)
+	}
+}
+
+// No model needed: held packets aren't decoded.
+func TestTranscriberHoldsAtMostOneSecondPerStream(t *testing.T) {
+	captions := &captionLog{}
+	tr := newTranscriber(nil, captions.record, nobodyOptedOut)
+	defer tr.Close()
+
+	data := []byte{1, 2, 3}
+	if err := tr.ReceiveOpusFrame(0, &voice.Packet{SSRC: 7, Opus: data}); err != nil {
+		t.Fatal(err)
+	}
+	// disgo reuses the packet's memory for the next packet, so what's held
+	// must be a copy.
+	data[0] = 99
+	tr.mu.Lock()
+	first := tr.held[7][0][0]
+	tr.mu.Unlock()
+	if first != 1 {
+		t.Error("held packets must be copies, not the bytes disgo will overwrite")
+	}
+
+	for range 200 {
+		if err := tr.ReceiveOpusFrame(0, &voice.Packet{SSRC: 7, Opus: []byte{5}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := tr.heldCount(7); got != holdLimit {
+		t.Errorf("a stream that's never named should hold at most %d packets, holds %d", holdLimit, got)
+	}
+
+	tr.Close()
+	if got := tr.heldCount(7); got != 0 {
+		t.Errorf("Close should drop held packets, %d left", got)
+	}
+}
+
+// A held packet that can't be decoded is reported, but the rest still go in.
+func TestTranscriberBadHeldPacketDoesntLoseTheRest(t *testing.T) {
+	tt := newTestTranscriber(t)
+	packets := speechPackets(t, sampleWAV("0.wav"))[:100]
+
+	if err := tt.ReceiveOpusFrame(0, &voice.Packet{SSRC: 7, Opus: []byte{}}); err != nil {
+		t.Fatal(err) // held, not decoded yet
+	}
+	if err := tt.ReceiveOpusFrame(42, &voice.Packet{SSRC: 7, Opus: packets[0]}); err == nil {
+		t.Error("the bad held packet should be reported when it's caught up on")
+	}
+	tt.say(t, 7, 42, packets[1:])
+	tt.wait(1300 * time.Millisecond)
+	tt.flushQuiet()
+
+	finals := tt.captions.finals()
+	if len(finals) != 1 {
+		t.Fatalf("the good packets should still be captioned, got %v", finals)
+	}
+	containsAll(t, finals[0].text, "AFTER EARLY")
 }

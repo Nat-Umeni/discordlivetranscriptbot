@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -53,17 +54,28 @@ var commands = []discord.ApplicationCommandCreate{
 	// /transcribe optout, which everyone needs.
 	discord.SlashCommandCreate{
 		Name:        "captions-setup",
-		Description: "Choose which role counts as note-takers for captions in this server",
+		Description: "Choose the note-taker role, captions channel and no-captions role for this server",
 		// Only members with Manage Server see it by default. Admins can still
 		// change who sees it in Server Settings → Integrations.
 		DefaultMemberPermissions: omit.NewPtr(discord.PermissionManageGuild),
 		// Servers only: it makes no sense in a DM.
 		Contexts: []discord.InteractionContextType{discord.InteractionContextTypeGuild},
 		Options: []discord.ApplicationCommandOption{
+			// Both optional: set either or both, or neither to see the current
+			// settings.
 			discord.ApplicationCommandOptionRole{
 				Name:        "notetaker-role",
 				Description: "Members with this role can start and stop captions",
-				Required:    true,
+			},
+			discord.ApplicationCommandOptionChannel{
+				Name:        "captions-channel",
+				Description: "Each call's captions thread is created in this channel",
+				// Text channels only: threads can't be made in voice channels.
+				ChannelTypes: []discord.ChannelType{discord.ChannelTypeGuildText},
+			},
+			discord.ApplicationCommandOptionRole{
+				Name:        "no-captions-role",
+				Description: "Members with this role are never captioned",
 			},
 		},
 	},
@@ -106,6 +118,9 @@ func main() {
 			gateway.WithIntents(
 				gateway.IntentGuilds,
 				gateway.IntentGuildVoiceStates,
+				// Privileged (ticked in the Developer Portal): tells the bot when
+				// someone's roles change, so the no-captions role works mid-call.
+				gateway.IntentGuildMembers,
 				gateway.IntentGuildMessages,
 				gateway.IntentMessageContent,
 			),
@@ -145,9 +160,24 @@ func main() {
 
 	fmt.Println("Bot is online")
 
+	// Wait for Ctrl+C, a stop from the system (SIGTERM), or the terminal
+	// window being closed (SIGHUP).
 	sc := make(chan os.Signal, 1)
-	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
+	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, os.Interrupt)
 	<-sc
+
+	// Then the deferred client.Close leaves every call.
+	clearStatusesOnShutdown(client)
+}
+
+// clearStatusesOnShutdown takes the "live captions" status off every call
+// being captioned, while the bot is still in them (setting a call's status
+// needs the bot connected to it). Without this, shutting the bot down leaves
+// "Live captions" showing on calls nobody is captioning.
+func clearStatusesOnShutdown(client *bot.Client) {
+	for _, running := range activeSessions.all() {
+		clearVoiceStatus(client, running.ChannelID)
+	}
 }
 
 func onTranscribeStart(e *handler.CommandEvent) error {
@@ -164,6 +194,22 @@ func onTranscribeStart(e *handler.CommandEvent) error {
 			message += " An admin can choose the note-taker role with /captions-setup."
 		}
 		return createHiddenMessageForCommandCaller(e, message)
+	}
+
+	// Captions need somewhere to go, and people need a way to opt out, before
+	// it's worth joining.
+	captionsChannelID, captionsChannelSet := settings.CaptionsChannel(*guildID)
+	noCaptionsRoleID, noCaptionsRoleSet := settings.NoCaptionsRole(*guildID)
+	var missing []string
+	if !captionsChannelSet {
+		missing = append(missing, "a captions channel (captions-channel)")
+	}
+	if !noCaptionsRoleSet {
+		missing = append(missing, "a role for people who don't want to be captioned (no-captions-role)")
+	}
+	if len(missing) > 0 {
+		return createHiddenMessageForCommandCaller(e, fmt.Sprintf("Before I can caption here, an admin needs to pick %s with /captions-setup.",
+			strings.Join(missing, " and ")))
 	}
 
 	// find the chat
@@ -208,7 +254,19 @@ func onTranscribeStart(e *handler.CommandEvent) error {
 	}
 
 	if !canJoin {
-		return createHiddenMessageForCommandCaller(e, fmt.Sprintf("I don't have permission to join %s, ask an admin to give me View Channel and Connect there", clickableChatName))
+		return createHiddenMessageForCommandCaller(e, fmt.Sprintf("I don't have permission to join %s, ask an admin to give me View Channel, Connect, Send Messages and Set Voice Channel Status there", clickableChatName))
+	}
+
+	// checked again here, not just in /captions-setup: the channel's
+	// permissions may have changed since
+	canPost, err := checkBotCanPostCaptions(e, *guildID, captionsChannelID)
+	if err != nil {
+		log.Printf("Failed to check permissions in the captions channel: %v", err)
+		return createHiddenMessageForCommandCaller(e, "I couldn't check whether I can post in the captions channel. If it's been deleted, pick another with /captions-setup captions-channel.")
+	}
+
+	if !canPost {
+		return createHiddenMessageForCommandCaller(e, missingCaptionsPermissionsMessage(captionsChannelID))
 	}
 
 	err = createHiddenMessageForCommandCaller(e, fmt.Sprintf("I'm joining %s and setting the chat status to '%s'", clickableChatName, title))
@@ -237,10 +295,44 @@ func onTranscribeStart(e *handler.CommandEvent) error {
 		return err
 	}
 
+	// Joined, so now tell everyone, before listening to anything: a notice in
+	// the call's chat, the captions thread and the call's status. Doing this
+	// after joining means a failed join never leaves announcements behind.
+	thread, err := announceCaptions(e.Client(), captionsCall{
+		title:             title,
+		voiceChannelID:    *voiceState.ChannelID,
+		captionsChannelID: captionsChannelID,
+		noCaptionsRoleID:  noCaptionsRoleID,
+		startedBy:         e.User().ID,
+	})
+	if err != nil {
+		// people can't be told, so captions mustn't run: leave again
+		voiceConnection.Close(context.Background())
+		log.Printf("couldn't announce the captions: %v", err)
+
+		_, err = e.CreateFollowupMessage(discord.MessageCreate{
+			Flags: discord.MessageFlagEphemeral,
+			Content: fmt.Sprintf("I couldn't post the captions notice in %s's chat and the thread in %s, so I've left again. Try again in a moment.",
+				clickableChatName, discord.ChannelMention(captionsChannelID)),
+		})
+		return err
+	}
+
+	// Tell the caller where captions are. If this fails, captions are still
+	// running and the thread is in the channel, so log it and carry on.
+	_, err = e.CreateFollowupMessage(discord.MessageCreate{
+		Flags:   discord.MessageFlagEphemeral,
+		Content: fmt.Sprintf("Captions are live in %s", thread.Mention()),
+	})
+	if err != nil {
+		log.Printf("couldn't send the captions thread link: %v", err)
+	}
+
 	// start listening: live captions for each speaker, printed to the terminal
-	// under their name in this server (milestone 2 posts them in a thread)
+	// under their name in this server, skipping anyone with the no-captions role
 	names := memberNames(e.Client().Caches, *guildID)
-	voiceConnection.SetOpusFrameReceiver(newTranscriber(recogniser, captionPrinter(names)))
+	optedOut := optedOutOfCaptions(e.Client().Caches, *guildID)
+	voiceConnection.SetOpusFrameReceiver(newTranscriber(recogniser, captionPrinter(names), optedOut))
 
 	// joined, so keep the claim: the session now runs until /transcribe stop
 	joined = true
@@ -271,6 +363,10 @@ func onTranscribeStop(e *handler.CommandEvent) error {
 	if err != nil {
 		return err
 	}
+
+	// Take the "live captions" status off the call while the bot is still in
+	// it (setting a call's status needs the bot to be connected to it).
+	clearVoiceStatus(e.Client(), current.ChannelID)
 
 	// Leave the voice channel. GetConn is nil if the bot was already removed from
 	// voice (e.g. someone disconnected it), in which case there's nothing to close.
@@ -317,11 +413,16 @@ func onBotMovedVoice(e *events.GuildVoiceMove) {
 func endSessionAfterOutsideVoiceChange(client *bot.Client, guildID snowflake.ID, whatHappened string) {
 	// No session means the change was ours: /transcribe stop or a failed join
 	// already cleaned up, so there's nothing to do.
-	if _, running := activeSessions.get(guildID); !running {
+	current, running := activeSessions.get(guildID)
+	if !running {
 		return
 	}
 
 	log.Printf("I was %s in server %s by someone else, ending that session", whatHappened, guildID)
+
+	// Try to take the "live captions" status off the call. The bot may already
+	// be out of it, in which case Discord can refuse; that's only logged.
+	clearVoiceStatus(client, current.ChannelID)
 
 	// Close leaves voice (if a move left the bot connected somewhere) and removes
 	// disgo's connection. disgo keeps a dropped connection registered, and
@@ -344,16 +445,73 @@ func onCaptionsSetup(e *handler.CommandEvent) error {
 		return createHiddenMessageForCommandCaller(e, "I only work inside a server, run this command in one.")
 	}
 
-	role := e.SlashCommandInteractionData().Role("notetaker-role")
+	// Every option is optional; the bools say whether each was given.
+	data := e.SlashCommandInteractionData()
+	role, roleGiven := data.OptRole("notetaker-role")
+	channel, channelGiven := data.OptChannel("captions-channel")
+	noCaptionsRole, noCaptionsRoleGiven := data.OptRole("no-captions-role")
 
-	err := settings.SetNoteTakerRole(*guildID, role.ID)
-	if err != nil {
-		log.Printf("couldn't save the note-taker role: %v", err)
-		return createHiddenMessageForCommandCaller(e, "I couldn't save that, try again in a moment")
+	// Check the channel before saving anything, so a channel the bot can't
+	// post in is never saved and only discovered at the next start.
+	if channelGiven {
+		canPost, err := checkBotCanPostCaptions(e, *guildID, channel.ID)
+		if err != nil {
+			log.Printf("Failed to check permissions in the chosen captions channel: %v", err)
+			return createHiddenMessageForCommandCaller(e, "I couldn't check whether I can post in that channel, try again in a moment")
+		}
+		if !canPost {
+			return createHiddenMessageForCommandCaller(e, missingCaptionsPermissionsMessage(channel.ID))
+		}
 	}
 
-	return createHiddenMessageForCommandCaller(e, fmt.Sprintf("Got it, I'll treat %s as note-takers here. They can now start and stop captions.",
-		discord.RoleMention(role.ID)))
+	if roleGiven {
+		if err := settings.SetNoteTakerRole(*guildID, role.ID); err != nil {
+			log.Printf("couldn't save the note-taker role: %v", err)
+			return createHiddenMessageForCommandCaller(e, "I couldn't save that, try again in a moment")
+		}
+	}
+	if channelGiven {
+		if err := settings.SetCaptionsChannel(*guildID, channel.ID); err != nil {
+			log.Printf("couldn't save the captions channel: %v", err)
+			return createHiddenMessageForCommandCaller(e, "I couldn't save that, try again in a moment")
+		}
+	}
+	if noCaptionsRoleGiven {
+		if err := settings.SetNoCaptionsRole(*guildID, noCaptionsRole.ID); err != nil {
+			log.Printf("couldn't save the no-captions role: %v", err)
+			return createHiddenMessageForCommandCaller(e, "I couldn't save that, try again in a moment")
+		}
+	}
+
+	// Show the settings as they are now, whether or not anything changed.
+	message := "Here's how captions are set up here:"
+	if roleGiven || channelGiven || noCaptionsRoleGiven {
+		message = "Got it. " + message
+	}
+	return createHiddenMessageForCommandCaller(e, message+"\n"+describeCaptionsSettings(*guildID))
+}
+
+// describeCaptionsSettings lists a server's captions settings for
+// /captions-setup's reply.
+func describeCaptionsSettings(serverID snowflake.ID) string {
+	noteTakers := "not set (only moderators can start captions)"
+	if roleID, ok := settings.NoteTakerRole(serverID); ok {
+		noteTakers = discord.RoleMention(roleID) + " (they can start and stop captions)"
+	}
+
+	captionsChannel := "not set (I need one before I can start captions)"
+	if channelID, ok := settings.CaptionsChannel(serverID); ok {
+		captionsChannel = discord.ChannelMention(channelID)
+	}
+
+	notCaptioned := "not set (I need one before I can start captions, so people can opt out)"
+	if roleID, ok := settings.NoCaptionsRole(serverID); ok {
+		notCaptioned = "anyone with " + discord.RoleMention(roleID)
+	}
+
+	return "- Note-takers: " + noteTakers +
+		"\n- Captions go in: " + captionsChannel +
+		"\n- Not captioned: " + notCaptioned
 }
 
 // canManageTranscription reports whether the person who ran the command may start
@@ -377,23 +535,49 @@ func canManageTranscription(e *handler.CommandEvent, serverID snowflake.ID) bool
 }
 
 func checkBotCanJoin(e *handler.CommandEvent, serverID, channelID snowflake.ID) (bool, error) {
+	perms, err := botPermissionsIn(e, serverID, channelID)
+	if err != nil {
+		return false, err
+	}
+
+	return perms.Has(voicePermissions), nil
+}
+
+// checkBotCanPostCaptions says whether the bot can post the opening message
+// and the captions thread in a channel. The error means it couldn't check.
+func checkBotCanPostCaptions(e *handler.CommandEvent, serverID, channelID snowflake.ID) (bool, error) {
+	perms, err := botPermissionsIn(e, serverID, channelID)
+	if err != nil {
+		return false, err
+	}
+
+	return perms.Has(captionsPermissions), nil
+}
+
+// missingCaptionsPermissionsMessage tells an admin what to fix when the bot
+// can't post captions in a channel.
+func missingCaptionsPermissionsMessage(channelID snowflake.ID) string {
+	return fmt.Sprintf("I can't post captions in %s. Ask an admin to give me View Channel, Send Messages, "+
+		"Create Public Threads and Send Messages in Threads there.", discord.ChannelMention(channelID))
+}
+
+// botPermissionsIn works out the bot's permissions in one channel, from disgo's
+// cache. The error means it couldn't check, not that the bot isn't allowed.
+func botPermissionsIn(e *handler.CommandEvent, serverID, channelID snowflake.ID) (discord.Permissions, error) {
 	// Look up the bot's own member info (which roles it has) in disgo's cache.
 	// ok is false if the cache doesn't have it. That doesn't mean the bot isn't in
 	// the server; it means we can't check its permissions.
 	botMember, memberCacheOk := e.Client().Caches.SelfMember(serverID)
 	if !memberCacheOk {
-		// Couldn't check: return false with an error
-		return false, fmt.Errorf("could not determine if the bot was in the cache")
+		return 0, fmt.Errorf("could not determine if the bot was in the cache")
 	}
 
 	channel, channelCacheOk := e.Client().Caches.Channel(channelID)
 	if !channelCacheOk {
-		return false, fmt.Errorf("could not find that voice channel in the cache to determine join perms, looked for %s", channelID)
+		return 0, fmt.Errorf("could not find channel %s in the cache to check permissions", channelID)
 	}
 
-	perms := e.Client().Caches.MemberPermissionsInChannel(channel, botMember)
-
-	return perms.Has(discord.PermissionConnect, discord.PermissionViewChannel), nil
+	return e.Client().Caches.MemberPermissionsInChannel(channel, botMember), nil
 }
 
 func createHiddenMessageForCommandCaller(e *handler.CommandEvent, message string) error {

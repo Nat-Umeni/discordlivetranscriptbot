@@ -114,3 +114,125 @@ func TestSettingsConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestCaptionsChannelSurvivesSaveAndReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	store, err := loadSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server, channel := snowflake.ID(1171143553743200358), snowflake.ID(1371143553743200111)
+	if _, ok := store.CaptionsChannel(server); ok {
+		t.Error("a server that was never set up should have no captions channel")
+	}
+	if err := store.SetCaptionsChannel(server, channel); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"captionsChannelID": "1371143553743200111"`) {
+		t.Errorf("file should hold the channel ID as a string, got:\n%s", data)
+	}
+	if strings.Contains(string(data), "noteTakerRoleID") {
+		t.Errorf("an unset role should be left out of the file, got:\n%s", data)
+	}
+
+	reloaded, err := loadSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := reloaded.CaptionsChannel(server); !ok || got != channel {
+		t.Fatalf("after reload got (%v, %v), want (%v, true)", got, ok, channel)
+	}
+	// The server has an entry now, but only a channel: no role.
+	if _, ok := reloaded.NoteTakerRole(server); ok {
+		t.Error("saving only a channel shouldn't make a note-taker role appear")
+	}
+}
+
+// Each setter must only change its own setting. Replacing the whole entry
+// would quietly wipe the other one.
+func TestSettingOneThingKeepsTheOther(t *testing.T) {
+	store, err := loadSettings(filepath.Join(t.TempDir(), "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const server, role, channel snowflake.ID = 1, 2, 3
+
+	if err := store.SetNoteTakerRole(server, role); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCaptionsChannel(server, channel); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := store.NoteTakerRole(server); !ok || got != role {
+		t.Errorf("setting the channel wiped the role: got (%v, %v)", got, ok)
+	}
+
+	if err := store.SetNoteTakerRole(server, 4); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := store.CaptionsChannel(server); !ok || got != channel {
+		t.Errorf("setting the role wiped the channel: got (%v, %v)", got, ok)
+	}
+}
+
+func TestSetCaptionsChannelWriteError(t *testing.T) {
+	store, err := loadSettings(filepath.Join(t.TempDir(), "missing-folder", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCaptionsChannel(1, 2); err == nil {
+		t.Fatal("expected an error when the settings file can't be written")
+	}
+}
+
+func TestNoCaptionsRoleSurvivesSaveAndReloadAndKeepsTheOthers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	store, err := loadSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const server, noteTakers, channel, noCaptions snowflake.ID = 1, 2, 3, 4
+
+	if _, ok := store.NoCaptionsRole(server); ok {
+		t.Error("a server that was never set up should have no no-captions role")
+	}
+	if err := store.SetNoteTakerRole(server, noteTakers); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCaptionsChannel(server, channel); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetNoCaptionsRole(server, noCaptions); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := loadSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := reloaded.NoCaptionsRole(server); !ok || got != noCaptions {
+		t.Errorf("after reload got (%v, %v), want (%v, true)", got, ok, noCaptions)
+	}
+	if got, _ := reloaded.NoteTakerRole(server); got != noteTakers {
+		t.Errorf("setting the no-captions role wiped the note-taker role, got %v", got)
+	}
+	if got, _ := reloaded.CaptionsChannel(server); got != channel {
+		t.Errorf("setting the no-captions role wiped the captions channel, got %v", got)
+	}
+}
+
+func TestSetNoCaptionsRoleWriteError(t *testing.T) {
+	store, err := loadSettings(filepath.Join(t.TempDir(), "missing-folder", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetNoCaptionsRole(1, 2); err == nil {
+		t.Fatal("expected an error when the settings file can't be written")
+	}
+}

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"log"
+	"slices"
 	"sync"
 	"time"
 
@@ -14,10 +17,14 @@ const (
 	quietLimit      = 1200 * time.Millisecond
 	quietCheckEvery = 100 * time.Millisecond
 	tailPadding     = 12800
+
+	// How many packets (20 ms each, so 1 s) to hold per stream while Discord
+	// hasn't said whose it is.
+	holdLimit = 50
 )
 
 // captionFunc is what the transcriber does with text: print it (printer.go),
-// record it (tests) or, in milestone 2, post it in Discord.
+// record it (tests) or, later, post it in Discord.
 type captionFunc func(userID snowflake.ID, text string, final bool)
 
 type speakerStream struct {
@@ -34,21 +41,33 @@ type transcriber struct {
 	recogniser *sherpa.OnlineRecognizer
 	speakers   map[uint32]*speakerStream
 	onText     captionFunc
+	optedOut   optOutFunc
 	now        func() time.Time
-	done       chan struct{}
-	closeOnce  sync.Once
-	closed     bool
+
+	// Packets from streams Discord hasn't named yet, kept undecoded until we
+	// know whether that person has opted out.
+	held map[uint32][][]byte
+	// Who's been logged as "not captioning", so it's logged once, not 50
+	// times a second.
+	skipLogged map[snowflake.ID]bool
+
+	done      chan struct{}
+	closeOnce sync.Once
+	closed    bool
 }
 
 // Compile-time check that transcriber has all three methods disgo needs, so
 // it can be passed to SetOpusFrameReceiver.
 var _ voice.OpusFrameReceiver = (*transcriber)(nil)
 
-func newTranscriber(recogniser *sherpa.OnlineRecognizer, onText captionFunc) *transcriber {
+func newTranscriber(recogniser *sherpa.OnlineRecognizer, onText captionFunc, optedOut optOutFunc) *transcriber {
 	t := &transcriber{
 		recogniser: recogniser,
 		onText:     onText,
+		optedOut:   optedOut,
 		speakers:   make(map[uint32]*speakerStream),
+		held:       make(map[uint32][][]byte),
+		skipLogged: make(map[snowflake.ID]bool),
 		now:        time.Now,
 		done:       make(chan struct{}),
 	}
@@ -144,8 +163,8 @@ func (t *transcriber) report(speaker *speakerStream) {
 }
 
 // ReceiveOpusFrame is called by disgo for every 20 ms packet of someone
-// talking. It feeds the packet into that speaker's stream and reports any new
-// text.
+// talking. Nobody who has opted out is ever decoded or captioned; everyone else's
+// packet goes into their stream and any new text is reported.
 func (t *transcriber) ReceiveOpusFrame(userID snowflake.ID, packet *voice.Packet) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -155,9 +174,62 @@ func (t *transcriber) ReceiveOpusFrame(userID snowflake.ID, packet *voice.Packet
 		return nil
 	}
 
-	// Find this stream's speaker, keyed by stream number (SSRC) so their
-	// first words count even before Discord says who they are.
-	speaker, found := t.speakers[packet.SSRC]
+	ssrc := packet.SSRC
+
+	// 0 means Discord hasn't said whose stream this is yet, so there's no way
+	// to tell whether they've opted out. Keep the packet without decoding it,
+	// and catch up once we know who it is. Only the newest holdLimit packets
+	// are kept, so a stream that never gets a name can't fill up memory.
+	if userID == 0 {
+		// A copy: disgo reuses the packet's memory for the next one.
+		held := append(t.held[ssrc], slices.Clone(packet.Opus))
+		if len(held) > holdLimit {
+			held = held[len(held)-holdLimit:]
+		}
+		t.held[ssrc] = held
+		return nil
+	}
+
+	held := t.held[ssrc]
+	delete(t.held, ssrc)
+
+	if t.optedOut(userID) {
+		// Whatever was held for them is thrown away undecoded.
+		t.skip(ssrc, userID)
+		return nil
+	}
+	delete(t.skipLogged, userID) // log again if they opt out again later
+
+	// Catch up on what arrived before we knew who it was, then this packet. A
+	// packet that can't be decoded is skipped; the rest still go in.
+	var errs []error
+	for _, data := range held {
+		errs = append(errs, t.feed(ssrc, userID, data))
+	}
+	errs = append(errs, t.feed(ssrc, userID, packet.Opus))
+	return errors.Join(errs...) // nil if they all worked; disgo logs any error
+}
+
+// skip stops captioning someone who has opted out. Called while t.mu is
+// already locked.
+func (t *transcriber) skip(ssrc uint32, userID snowflake.ID) {
+	// If they were mid-sentence when they got the role, what they'd already
+	// said is finished as normal; nothing after it is captioned.
+	if speaker, found := t.speakers[ssrc]; found {
+		t.dropSpeaker(ssrc, speaker)
+	}
+
+	if !t.skipLogged[userID] {
+		log.Printf("not captioning %s: they have the no-captions role", userID)
+		t.skipLogged[userID] = true
+	}
+}
+
+// feed decodes one packet into its speaker's stream and reports any new text.
+// Called while t.mu is already locked.
+func (t *transcriber) feed(ssrc uint32, userID snowflake.ID, data []byte) error {
+	// Find this stream's speaker, keyed by stream number (SSRC).
+	speaker, found := t.speakers[ssrc]
 	if !found {
 		// Discord sends 48 kHz stereo; this makes libopus hand back 16 kHz
 		// mono, which is what the model wants.
@@ -166,24 +238,19 @@ func (t *transcriber) ReceiveOpusFrame(userID snowflake.ID, packet *voice.Packet
 			return err
 		}
 		speaker = &speakerStream{
+			userID:  userID,
 			decoder: decoder,
 			stream:  sherpa.NewOnlineStream(t.recogniser),
 		}
-		t.speakers[packet.SSRC] = speaker
-	}
-
-	// 0 means Discord hasn't said who this stream belongs to yet. Fill it in
-	// as soon as it has.
-	if userID != 0 {
-		speaker.userID = userID
+		t.speakers[ssrc] = speaker
 	}
 
 	// 1920 samples = 120 ms, the longest packet Opus allows. Discord's 20 ms
 	// packets use 320 of them; n says how many were filled.
 	pcm := make([]float32, 1920)
-	n, err := speaker.decoder.DecodeFloat32(packet.Opus, pcm)
+	n, err := speaker.decoder.DecodeFloat32(data, pcm)
 	if err != nil {
-		return err // disgo logs it
+		return err
 	}
 
 	speaker.stream.AcceptWaveform(16000, pcm[:n])
@@ -222,6 +289,7 @@ func (t *transcriber) Close() {
 		for ssrc, speaker := range t.speakers {
 			t.dropSpeaker(ssrc, speaker)
 		}
+		clear(t.held) // never decoded, so nothing to finish
 		t.closed = true
 	})
 }
