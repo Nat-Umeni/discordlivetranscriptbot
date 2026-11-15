@@ -6,16 +6,22 @@ import (
 	"github.com/disgoorg/snowflake/v2"
 )
 
-// captionPrinter is milestone 1's captionFunc: captions go to the terminal
-// under each speaker's name. Milestone 2 swaps it for one that posts in the
-// Discord thread.
-func captionPrinter(nameFor nameFunc) captionFunc {
-	return func(userID snowflake.ID, text string, final bool) {
-		name := nameFor(userID)
-		if final {
-			log.Printf("%s: %s", name, text)
-			return
-		}
-		log.Printf("%s … %s", name, text)
+// terminalOutput logs finished captions to the terminal under each speaker's
+// name. Captions still being spoken aren't logged: they change about twice a
+// second per speaker and would flood the terminal.
+type terminalOutput struct {
+	nameFor nameFunc
+}
+
+func (o terminalOutput) caption(userID snowflake.ID, text string, final bool) {
+	if final {
+		log.Printf("%s: %s", o.nameFor(userID), text)
 	}
 }
+
+func (o terminalOutput) notCaptioned(userID snowflake.ID) {
+	log.Printf("%s isn't being captioned (no-captions role)", o.nameFor(userID))
+}
+
+// closed has nothing to finish: every line is logged as it arrives.
+func (o terminalOutput) closed() {}

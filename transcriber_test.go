@@ -88,16 +88,50 @@ type caption struct {
 	final  bool
 }
 
-// captionLog records everything the transcriber passes to onText.
+// captionLog is a captionOutput that records everything the transcriber
+// passes on.
 type captionLog struct {
-	mu    sync.Mutex
-	lines []caption
+	mu           sync.Mutex
+	lines        []caption
+	skippedUsers []snowflake.ID // who was reported as not being captioned
+	closedCount  int
 }
 
-func (l *captionLog) record(userID snowflake.ID, text string, final bool) {
+func (l *captionLog) caption(userID snowflake.ID, text string, final bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.lines = append(l.lines, caption{userID, text, final})
+}
+
+func (l *captionLog) notCaptioned(userID snowflake.ID) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.skippedUsers = append(l.skippedUsers, userID)
+}
+
+func (l *captionLog) closed() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.closedCount++
+}
+
+// skipped is how many times someone was reported as not being captioned.
+func (l *captionLog) skipped(userID snowflake.ID) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	count := 0
+	for _, id := range l.skippedUsers {
+		if id == userID {
+			count++
+		}
+	}
+	return count
+}
+
+func (l *captionLog) timesClosed() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.closedCount
 }
 
 func (l *captionLog) all() []caption {
@@ -132,7 +166,7 @@ func newTestTranscriber(t *testing.T) *testTranscriber {
 	tt := &testTranscriber{
 		// The transcriber only asks while holding its lock, so setOptedOut
 		// changes the map under the same lock.
-		transcriber: newTranscriber(testRecogniser(t), captions.record, func(userID snowflake.ID) bool { return optedOut[userID] }),
+		transcriber: newTranscriber(testRecogniser(t), captions, func(userID snowflake.ID) bool { return optedOut[userID] }),
 		captions:    captions,
 		clock:       time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC),
 		optedOut:    optedOut,
@@ -500,7 +534,7 @@ func TestTranscriberCloseFinishesEveryoneAndIgnoresLatePackets(t *testing.T) {
 // without the model downloaded.
 func TestTranscriberWithNobodyTalking(t *testing.T) {
 	captions := &captionLog{}
-	tr := newTranscriber(nil, captions.record, nobodyOptedOut)
+	tr := newTranscriber(nil, captions, nobodyOptedOut)
 
 	tr.CleanupUser(7) // joined and left without saying anything
 	tr.flushQuiet()
@@ -509,6 +543,9 @@ func TestTranscriberWithNobodyTalking(t *testing.T) {
 
 	if lines := captions.all(); len(lines) != 0 {
 		t.Errorf("nobody spoke, so nothing should be passed on, got %v", lines)
+	}
+	if n := captions.timesClosed(); n != 1 {
+		t.Errorf("the output should be told it's closed exactly once, even with Close twice; told %d times", n)
 	}
 }
 
@@ -551,7 +588,6 @@ func TestTranscriberConcurrentUse(t *testing.T) {
 }
 
 func TestTranscriberNeverCaptionsSomeoneWhoOptedOut(t *testing.T) {
-	logs := captureLog(t)
 	tt := newTestTranscriber(t)
 	tt.setOptedOut(42, true)
 
@@ -565,8 +601,8 @@ func TestTranscriberNeverCaptionsSomeoneWhoOptedOut(t *testing.T) {
 	if tt.speakerCount() != 0 {
 		t.Error("their audio shouldn't even be decoded: no stream should exist")
 	}
-	if n := strings.Count(logs.String(), "not captioning 42"); n != 1 {
-		t.Errorf("should log once that they're skipped, not per packet; logged %d times", n)
+	if n := tt.captions.skipped(42); n != 1 {
+		t.Errorf("should report once that they're not captioned, not per packet; reported %d times", n)
 	}
 }
 
@@ -624,7 +660,6 @@ func TestTranscriberFinishesTheSentenceWhenSomeoneOptsOutMidway(t *testing.T) {
 }
 
 func TestTranscriberCaptionsAgainWhenTheRoleIsRemoved(t *testing.T) {
-	logs := captureLog(t)
 	tt := newTestTranscriber(t)
 	packets := speechPackets(t, sampleWAV("0.wav"))[:100]
 
@@ -641,18 +676,18 @@ func TestTranscriberCaptionsAgainWhenTheRoleIsRemoved(t *testing.T) {
 	}
 	containsAll(t, finals[0].text, "AFTER EARLY")
 
-	// Opting out again is logged again.
+	// Opting out again is reported again.
 	tt.setOptedOut(42, true)
 	tt.say(t, 7, 42, packets[:5])
-	if n := strings.Count(logs.String(), "not captioning 42"); n != 2 {
-		t.Errorf("want a log each time they opt out, got %d", n)
+	if n := tt.captions.skipped(42); n != 2 {
+		t.Errorf("want a report each time they opt out, got %d", n)
 	}
 }
 
 // No model needed: held packets aren't decoded.
 func TestTranscriberHoldsAtMostOneSecondPerStream(t *testing.T) {
 	captions := &captionLog{}
-	tr := newTranscriber(nil, captions.record, nobodyOptedOut)
+	tr := newTranscriber(nil, captions, nobodyOptedOut)
 	defer tr.Close()
 
 	data := []byte{1, 2, 3}

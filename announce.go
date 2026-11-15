@@ -46,16 +46,22 @@ type captionsCall struct {
 
 // announceCaptions tells everyone a call is being captioned, before anything
 // is listened to:
-//   - a notice in the call's own chat, for the people in it
-//   - the captions thread in the captions channel, with an opening post
+//   - a notice in the call's own chat, for the people in it, linking to the
+//     captions thread
+//   - the captions thread in the captions channel, with an opening post, and
+//     whoever started the captions added to it
 //   - the voice channel's status, seen by anyone in or joining the call
 //
 // If the notice or the thread fails, nothing is left behind and the error is
-// returned: captions must not run without people being told. A failed status
-// is only logged, because the notice has already told them.
+// returned: captions must not run without people being told. The rest only
+// make captions easier to find, so if they fail it's logged and captions go
+// ahead.
 func announceCaptions(client *bot.Client, call captionsCall) (*discord.GuildThread, error) {
+	// The notice goes first so people are told before anything else happens.
+	// The thread doesn't exist yet, so it points at the captions channel for
+	// now.
 	notice, err := client.Rest.CreateMessage(call.voiceChannelID, discord.MessageCreate{
-		Content:         callNotice(call),
+		Content:         callNotice(call, 0),
 		AllowedMentions: noPings,
 	})
 	if err != nil {
@@ -66,6 +72,23 @@ func announceCaptions(client *bot.Client, call captionsCall) (*discord.GuildThre
 	if err != nil {
 		deleteOwnMessage(client, call.voiceChannelID, notice.ID)
 		return nil, err
+	}
+
+	// Now point the notice straight at the thread. The captions channel holds
+	// a thread for every call, so a link to the channel leaves people
+	// guessing which one is live.
+	linked := callNotice(call, thread.ID())
+	_, err = client.Rest.UpdateMessage(call.voiceChannelID, notice.ID, discord.MessageUpdate{Content: &linked, AllowedMentions: noPings})
+	if err != nil {
+		log.Printf("couldn't link the call notice to the captions thread: %v", err)
+	}
+
+	// Add whoever started the captions to the thread, so it shows in their
+	// sidebar and lights up as captions arrive. Only them: Discord posts an
+	// "added … to the thread" line for each person added, which would clutter
+	// the captions.
+	if err := client.Rest.AddThreadMember(thread.ID(), call.startedBy); err != nil {
+		log.Printf("couldn't add %s to the captions thread: %v", call.startedBy, err)
 	}
 
 	err = client.Rest.SetVoiceChannelStatus(call.voiceChannelID, discord.VoiceChannelStatusUpdate{Status: liveStatus(call.title)})
@@ -128,13 +151,19 @@ func deleteOwnMessage(client *bot.Client, channelID, messageID snowflake.ID) {
 }
 
 // callNotice goes in the call's own chat, so the people in it know they're
-// being captioned, where the captions are, and how to opt out.
-func callNotice(call captionsCall) string {
+// being captioned, where the captions are, and how to opt out. It links to the
+// captions thread, or to the captions channel while threadID is 0 (the thread
+// isn't made yet).
+func callNotice(call captionsCall, threadID snowflake.ID) string {
+	captionsAt := call.captionsChannelID
+	if threadID != 0 {
+		captionsAt = threadID
+	}
 	return fmt.Sprintf("🔴 **This call is being captioned live** so everyone can follow along, "+
 		"including members who are Deaf or hard of hearing. Captions are in %s.\n"+
 		"I only keep the text: audio is never recorded or stored.\n"+
 		"%s",
-		discord.ChannelMention(call.captionsChannelID), optOutLine(call.noCaptionsRoleID))
+		discord.ChannelMention(captionsAt), optOutLine(call.noCaptionsRoleID))
 }
 
 // captionsIntro is the opening post of the captions thread.

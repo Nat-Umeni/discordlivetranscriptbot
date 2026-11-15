@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -156,8 +157,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	defer client.Close(context.Background())
-
 	fmt.Println("Bot is online")
 
 	// Wait for Ctrl+C, a stop from the system (SIGTERM), or the terminal
@@ -166,8 +165,27 @@ func main() {
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, os.Interrupt)
 	<-sc
 
-	// Then the deferred client.Close leaves every call.
+	shutDown(client, &openPosters)
+}
+
+// shutDown ends every running session so nothing is left half-done. The order
+// matters:
+//  1. clear each call's status while the bot is still in it
+//  2. leave every call: each transcriber then finishes everyone's last
+//     sentence and hands it to its poster
+//  3. give the posters a few seconds to get those into the threads
+//  4. only then close the client: once its connection to Discord is closed,
+//     anything still trying to post would hang
+func shutDown(client *bot.Client, posters *sync.WaitGroup) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	clearStatusesOnShutdown(client)
+	client.VoiceManager.Close(ctx)
+	if !waitForPosters(posters, 5*time.Second) {
+		log.Printf("some captions were still being posted when I shut down")
+	}
+	client.Close(ctx)
 }
 
 // clearStatusesOnShutdown takes the "live captions" status off every call
@@ -328,11 +346,16 @@ func onTranscribeStart(e *handler.CommandEvent) error {
 		log.Printf("couldn't send the captions thread link: %v", err)
 	}
 
-	// start listening: live captions for each speaker, printed to the terminal
-	// under their name in this server, skipping anyone with the no-captions role
+	// Start listening: live captions for each speaker, posted and growing in the
+	// thread under their name in this server, with finished ones also logged to
+	// the terminal. Anyone with the no-captions role is skipped.
 	names := memberNames(e.Client().Caches, *guildID)
 	optedOut := optedOutOfCaptions(e.Client().Caches, *guildID)
-	voiceConnection.SetOpusFrameReceiver(newTranscriber(recogniser, captionPrinter(names), optedOut))
+	output := multiOutput{
+		terminalOutput{nameFor: names},
+		newThreadPoster(e.Client().Rest, thread.ID(), names, &openPosters),
+	}
+	voiceConnection.SetOpusFrameReceiver(newTranscriber(recogniser, output, optedOut))
 
 	// joined, so keep the claim: the session now runs until /transcribe stop
 	joined = true

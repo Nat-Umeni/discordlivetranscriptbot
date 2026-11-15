@@ -52,12 +52,17 @@ func TestLiveStatus(t *testing.T) {
 }
 
 func TestCallNotice(t *testing.T) {
-	notice := callNotice(testCall)
+	// Before the thread exists it points at the captions channel; after, at
+	// the thread itself.
+	if before := callNotice(testCall, 0); !strings.Contains(before, "Captions are in "+discord.ChannelMention(captionsChannelID)+".") {
+		t.Errorf("before the thread exists, the notice should link the captions channel: %q", before)
+	}
+	notice := callNotice(testCall, threadID)
 
 	for _, want := range []string{
 		"This call is being captioned live",
 		"Deaf or hard of hearing",
-		"Captions are in " + discord.ChannelMention(captionsChannelID),
+		"Captions are in " + discord.ChannelMention(threadID) + ".",
 		"audio is never recorded or stored",
 		"Anyone with " + discord.RoleMention(noCaptionsRoleID) + " isn't captioned. Ask an admin how to get the role if you'd like to opt out.",
 	} {

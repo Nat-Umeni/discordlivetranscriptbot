@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"log"
 	"slices"
 	"sync"
 	"time"
@@ -23,10 +22,6 @@ const (
 	holdLimit = 50
 )
 
-// captionFunc is what the transcriber does with text: print it (printer.go),
-// record it (tests) or, later, post it in Discord.
-type captionFunc func(userID snowflake.ID, text string, final bool)
-
 type speakerStream struct {
 	userID    snowflake.ID
 	decoder   *opus.Decoder
@@ -40,16 +35,16 @@ type transcriber struct {
 	mu         sync.Mutex
 	recogniser *sherpa.OnlineRecognizer
 	speakers   map[uint32]*speakerStream
-	onText     captionFunc
+	out        captionOutput
 	optedOut   optOutFunc
 	now        func() time.Time
 
 	// Packets from streams Discord hasn't named yet, kept undecoded until we
 	// know whether that person has opted out.
 	held map[uint32][][]byte
-	// Who's been logged as "not captioning", so it's logged once, not 50
-	// times a second.
-	skipLogged map[snowflake.ID]bool
+	// Who the output has been told isn't being captioned, so it's told once,
+	// not 50 times a second.
+	skipReported map[snowflake.ID]bool
 
 	done      chan struct{}
 	closeOnce sync.Once
@@ -60,16 +55,16 @@ type transcriber struct {
 // it can be passed to SetOpusFrameReceiver.
 var _ voice.OpusFrameReceiver = (*transcriber)(nil)
 
-func newTranscriber(recogniser *sherpa.OnlineRecognizer, onText captionFunc, optedOut optOutFunc) *transcriber {
+func newTranscriber(recogniser *sherpa.OnlineRecognizer, out captionOutput, optedOut optOutFunc) *transcriber {
 	t := &transcriber{
-		recogniser: recogniser,
-		onText:     onText,
-		optedOut:   optedOut,
-		speakers:   make(map[uint32]*speakerStream),
-		held:       make(map[uint32][][]byte),
-		skipLogged: make(map[snowflake.ID]bool),
-		now:        time.Now,
-		done:       make(chan struct{}),
+		recogniser:   recogniser,
+		out:          out,
+		optedOut:     optedOut,
+		speakers:     make(map[uint32]*speakerStream),
+		held:         make(map[uint32][][]byte),
+		skipReported: make(map[snowflake.ID]bool),
+		now:          time.Now,
+		done:         make(chan struct{}),
 	}
 
 	// Runs alongside everything else until Close, ending the sentences of
@@ -125,7 +120,7 @@ func (t *transcriber) finishSentence(speaker *speakerStream) {
 
 	text := t.recogniser.GetResult(speaker.stream).Text
 	if text != "" {
-		t.onText(speaker.userID, text, true)
+		t.out.caption(speaker.userID, text, true)
 	}
 
 	// Start a fresh sentence for when they next talk.
@@ -147,14 +142,14 @@ func (t *transcriber) report(speaker *speakerStream) {
 
 	// Only pass it on if there's something to say and it's not a repeat.
 	if text != "" && text != speaker.lastText {
-		t.onText(speaker.userID, text, false)
+		t.out.caption(speaker.userID, text, false)
 		speaker.lastText = text
 	}
 
 	// The model thinks the sentence has ended.
 	if t.recogniser.IsEndpoint(speaker.stream) {
 		if text != "" {
-			t.onText(speaker.userID, text, true)
+			t.out.caption(speaker.userID, text, true)
 		}
 		// Start a fresh sentence: clear the model's text and ours.
 		t.recogniser.Reset(speaker.stream)
@@ -198,7 +193,7 @@ func (t *transcriber) ReceiveOpusFrame(userID snowflake.ID, packet *voice.Packet
 		t.skip(ssrc, userID)
 		return nil
 	}
-	delete(t.skipLogged, userID) // log again if they opt out again later
+	delete(t.skipReported, userID) // report again if they opt out again later
 
 	// Catch up on what arrived before we knew who it was, then this packet. A
 	// packet that can't be decoded is skipped; the rest still go in.
@@ -219,9 +214,9 @@ func (t *transcriber) skip(ssrc uint32, userID snowflake.ID) {
 		t.dropSpeaker(ssrc, speaker)
 	}
 
-	if !t.skipLogged[userID] {
-		log.Printf("not captioning %s: they have the no-captions role", userID)
-		t.skipLogged[userID] = true
+	if !t.skipReported[userID] {
+		t.out.notCaptioned(userID)
+		t.skipReported[userID] = true
 	}
 }
 
@@ -285,12 +280,17 @@ func (t *transcriber) Close() {
 		close(t.done) // stops the quiet timer
 
 		t.mu.Lock()
-		defer t.mu.Unlock()
 		for ssrc, speaker := range t.speakers {
 			t.dropSpeaker(ssrc, speaker)
 		}
 		clear(t.held) // never decoded, so nothing to finish
 		t.closed = true
+		t.mu.Unlock()
+
+		// Everyone's last sentence has gone out, so the output can finish up
+		// (the captions thread sends whatever's left). Outside the lock: that
+		// may take a moment, and nothing here needs protecting any more.
+		t.out.closed()
 	})
 }
 

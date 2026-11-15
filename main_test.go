@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/disgoorg/disgo/bot"
 	"github.com/disgoorg/disgo/cache"
@@ -69,6 +71,7 @@ type fakeConn struct {
 	selfMute, selfDeaf bool
 	closed             bool
 	receiver           voice.OpusFrameReceiver // what the handler set up to listen with
+	onClose            func()                  // if set, runs when the connection closes
 }
 
 func (c *fakeConn) SetOpusFrameReceiver(receiver voice.OpusFrameReceiver) {
@@ -90,6 +93,9 @@ func (c *fakeConn) Close(context.Context) {
 	c.closed = true
 	c.channelID = nil
 	delete(c.manager.conns, c.guildID)
+	if c.onClose != nil {
+		c.onClose()
+	}
 }
 
 func (c *fakeConn) ChannelID() *snowflake.ID { return c.channelID }
@@ -121,6 +127,13 @@ func (m *fakeVoiceManager) GetConn(guildID snowflake.ID) voice.Conn {
 	return conn
 }
 
+// Close mirrors disgo: every connection is closed and forgotten.
+func (m *fakeVoiceManager) Close(ctx context.Context) {
+	for _, conn := range m.conns {
+		conn.Close(ctx)
+	}
+}
+
 // connectBot puts the bot in a channel as if a previous start had joined it.
 func (m *fakeVoiceManager) connectBot(guildID, channelID snowflake.ID) *fakeConn {
 	conn := m.CreateConn(guildID).(*fakeConn)
@@ -147,6 +160,12 @@ type fakeRest struct {
 
 	statuses  []postedMessage // voice channel statuses set; message.Content holds the status
 	statusErr error
+
+	edits   []postedMessage // message edits; message.Content holds the new text
+	editErr error
+
+	threadMembers []postedMessage // people added to threads: channelID is the thread, messageID the user
+	addMemberErr  error
 }
 
 type postedMessage struct {
@@ -189,6 +208,22 @@ func (r *fakeRest) CreateThread(channelID snowflake.ID, create discord.ThreadCre
 		return nil, err
 	}
 	return &thread, nil
+}
+
+// Close does nothing: there's no real connection to close.
+func (r *fakeRest) Close(context.Context) {}
+
+func (r *fakeRest) UpdateMessage(channelID, messageID snowflake.ID, update discord.MessageUpdate, _ ...rest.RequestOpt) (*discord.Message, error) {
+	r.edits = append(r.edits, postedMessage{channelID: channelID, messageID: messageID, message: discord.MessageCreate{Content: *update.Content}})
+	if r.editErr != nil {
+		return nil, r.editErr
+	}
+	return &discord.Message{ID: messageID, ChannelID: channelID}, nil
+}
+
+func (r *fakeRest) AddThreadMember(threadID, userID snowflake.ID, _ ...rest.RequestOpt) error {
+	r.threadMembers = append(r.threadMembers, postedMessage{channelID: threadID, messageID: userID})
+	return r.addMemberErr
 }
 
 func (r *fakeRest) DeleteMessage(channelID, messageID snowflake.ID, _ ...rest.RequestOpt) error {
@@ -255,6 +290,16 @@ func newTestEnv(t *testing.T) *testEnv {
 		rest:  &fakeRest{},
 	}
 	env.client = &bot.Client{Caches: caches, VoiceManager: env.voice, Rest: env.rest}
+
+	// Stop any captions a test started, so their goroutines don't run on
+	// into later tests.
+	t.Cleanup(func() {
+		for _, conn := range env.voice.created {
+			if tr, ok := conn.receiver.(*transcriber); ok {
+				tr.Close()
+			}
+		}
+	})
 
 	oldSettings, oldSessions := settings, activeSessions
 	t.Cleanup(func() { settings, activeSessions = oldSettings, oldSessions })
@@ -455,22 +500,16 @@ func TestStartJoinsTheCallersChannel(t *testing.T) {
 	}
 	defer tr.Close() // stops its quiet timer; the real disgo does this when the call ends
 
-	// Captions go out under the speaker's name in this server.
-	env.client.Caches.AddMember(discord.Member{GuildID: serverID,
-		User: discord.User{ID: callerID, Username: "sam123", GlobalName: strPtr("Sam")}})
-	logs := captureLog(t)
-	tr.onText(callerID, "hello everyone", true)
-	if !strings.Contains(logs.String(), "Sam: hello everyone") {
-		t.Errorf("captions should show the speaker's name, logged:\n%s", logs)
-	}
-
 	current, running := activeSessions.get(serverID)
 	want := session{StartedBy: callerID, ChannelID: meetingChannelID, Title: "Weekly Meetup"}
 	if !running || current != want {
 		t.Fatalf("session: got (%+v, %v), want (%+v, true)", current, running, want)
 	}
 
-	// Opted-out speakers are skipped: the no-captions role is checked.
+	// Opted-out speakers are skipped: the no-captions role is checked. (Sam,
+	// the caller, is in the call, so they're cached like everyone in voice.)
+	env.client.Caches.AddMember(discord.Member{GuildID: serverID,
+		User: discord.User{ID: callerID, Username: "sam123", GlobalName: strPtr("Sam")}})
 	env.client.Caches.AddMember(discord.Member{GuildID: serverID, RoleIDs: []snowflake.ID{noCaptionsRoleID},
 		User: discord.User{ID: otherMemberID, Username: "jo"}})
 	if !tr.optedOut(otherMemberID) || tr.optedOut(callerID) {
@@ -519,6 +558,21 @@ func TestStartJoinsTheCallersChannel(t *testing.T) {
 	}
 	noPingsIn(t, intro.message)
 
+	// Once the thread exists, the notice is edited to link straight to it.
+	if len(env.rest.edits) != 1 {
+		t.Fatalf("want the notice edited once to link the thread, got %+v", env.rest.edits)
+	}
+	edit := env.rest.edits[0]
+	if edit.channelID != meetingChannelID || edit.messageID != noticeMessageID ||
+		!strings.Contains(edit.message.Content, "Captions are in "+discord.ChannelMention(threadID)) {
+		t.Errorf("the notice should now say the captions are in the thread, got %+v", edit)
+	}
+
+	// Whoever started the captions is added to the thread, and only them.
+	if len(env.rest.threadMembers) != 1 || env.rest.threadMembers[0].channelID != threadID || env.rest.threadMembers[0].messageID != callerID {
+		t.Errorf("want only the starter added to the thread, got %+v", env.rest.threadMembers)
+	}
+
 	// The call's status shows captions are on.
 	if len(env.rest.statuses) != 1 || env.rest.statuses[0].channelID != meetingChannelID ||
 		env.rest.statuses[0].message.Content != "🔴 Live captions: Weekly Meetup" {
@@ -531,6 +585,38 @@ func TestStartJoinsTheCallersChannel(t *testing.T) {
 	}
 	if !env.rest.followups[0].Flags.Has(discord.MessageFlagEphemeral) {
 		t.Error("the link should be hidden too")
+	}
+
+	// Captions go to the terminal and the new thread, under the speaker's name
+	// in this server. Checked last: the poster talks to the fake Discord from
+	// its own goroutine, so env.rest is only read again once it has finished.
+	out, ok := tr.out.(multiOutput)
+	if !ok || len(out) != 2 {
+		t.Fatalf("want captions going to the terminal and the thread, got %#v", tr.out)
+	}
+	if _, ok := out[0].(terminalOutput); !ok {
+		t.Errorf("first output should be the terminal, got %T", out[0])
+	}
+	poster, ok := out[1].(*threadPoster)
+	if !ok || poster.threadID != threadID {
+		t.Fatalf("second output should post in the new thread, got %#v", out[1])
+	}
+
+	logs := captureLog(t)
+	tr.out.caption(callerID, "hello everyone", true)
+	tr.Close() // the call ends: the poster sends what's left and stops
+	select {
+	case <-poster.finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the poster never finished")
+	}
+
+	if !strings.Contains(logs.String(), "Sam: hello everyone") {
+		t.Errorf("the terminal should log the finished caption under the name, logged:\n%s", logs)
+	}
+	last := env.rest.posted[len(env.rest.posted)-1]
+	if last.channelID != threadID || last.message.Content != "**Sam:** hello everyone" {
+		t.Errorf("want the caption posted in the thread as **Sam:** hello everyone, got %+v", last)
 	}
 }
 
@@ -704,6 +790,26 @@ func wantDeleted(t *testing.T, env *testEnv, want ...postedMessage) {
 		if got.channelID != want[i].channelID || got.messageID != want[i].messageID {
 			t.Errorf("deletion %d: got message %v in %v, want message %v in %v",
 				i, got.messageID, got.channelID, want[i].messageID, want[i].channelID)
+		}
+	}
+}
+
+// Linking the notice to the thread and adding the starter only make captions
+// easier to find: if they fail, captions still start.
+func TestStartStillCaptionsWhenFindingTheThreadIsHarder(t *testing.T) {
+	logs := captureLog(t)
+	env := newTestEnv(t)
+	env.rest.editErr = errors.New("discord unreachable")
+	env.rest.addMemberErr = errors.New("discord unreachable")
+	event, _ := env.command(t, moderator, startCommand("x"))
+
+	if err := onTranscribeStart(event); err != nil {
+		t.Fatalf("these failures aren't worth stopping captions for: %v", err)
+	}
+	stillCaptioning(t, env)
+	for _, want := range []string{"couldn't link the call notice to the captions thread", "couldn't add " + callerID.String() + " to the captions thread"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("expected %q in the log, logged:\n%s", want, logs)
 		}
 	}
 }
@@ -1287,6 +1393,47 @@ func (env *testEnv) voiceEvent(userID snowflake.ID) *events.GenericGuildVoiceSta
 	return &events.GenericGuildVoiceState{
 		GenericEvent: events.NewGenericEvent(env.client, 0, 0),
 		VoiceState:   discord.VoiceState{GuildID: serverID, UserID: userID},
+	}
+}
+
+func TestShutDownClearsStatusesLeavesCallsAndWaitsForCaptions(t *testing.T) {
+	env := newTestEnv(t)
+	conn := env.startedSession(callerID)
+
+	// A poster still sending when shutdown starts: it finishes once the call
+	// is left (in the real bot, leaving closes the transcriber, which closes
+	// its poster).
+	var posters sync.WaitGroup
+	poster := newThreadPoster(newFakeThread(), threadID, testNames, &posters)
+	conn.onClose = poster.closed
+
+	shutDown(env.client, &posters)
+
+	statusCleared(t, env)
+	if !conn.closed {
+		t.Error("shutting down should leave every call")
+	}
+	select {
+	case <-poster.finished:
+	default:
+		t.Error("shutting down should wait for posters to finish before closing the client")
+	}
+}
+
+func TestShutDownGivesUpWaitingOnAStuckPoster(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits the full 5 s shutdown timeout")
+	}
+	logs := captureLog(t)
+	env := newTestEnv(t)
+	var posters sync.WaitGroup
+	poster := newThreadPoster(newFakeThread(), threadID, testNames, &posters)
+	defer poster.closed()
+
+	shutDown(env.client, &posters) // the poster is never closed
+
+	if !strings.Contains(logs.String(), "some captions were still being posted when I shut down") {
+		t.Errorf("a stuck poster should be logged, not wait forever, logged:\n%s", logs)
 	}
 }
 
