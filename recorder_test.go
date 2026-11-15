@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"io"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -13,6 +16,16 @@ import (
 	"github.com/go-audio/wav"
 	"gopkg.in/hraban/opus.v2"
 )
+
+// captureLog sends log output to a buffer for one test, so the test can check
+// what was printed. TestMain discards logs otherwise.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(io.Discard) })
+	return &buf
+}
 
 // opusPackets makes n real Opus packets of a sine tone, 20 ms each, the same
 // shape Discord sends (48 kHz stereo), so the recorder decodes genuine audio.
