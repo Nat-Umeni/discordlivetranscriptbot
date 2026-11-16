@@ -199,7 +199,15 @@ func (r *fakeRest) CreateMessage(channelID snowflake.ID, messageCreate discord.M
 	defer r.mu.Unlock()
 	messageID := noticeMessageID
 	if channelID == threadID {
+		// The first post in the thread is the opening post; captions and
+		// copies after it get IDs of their own.
 		messageID = introMessageID
+		for _, earlier := range r.posted {
+			if earlier.channelID == threadID {
+				messageID = snowflake.ID(9000 + len(r.posted))
+				break
+			}
+		}
 	}
 	r.posted = append(r.posted, postedMessage{channelID, messageID, messageCreate})
 	if err := r.postErrIn[channelID]; err != nil {

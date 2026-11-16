@@ -433,3 +433,79 @@ func TestPosterClosingLineFailingIsLogged(t *testing.T) {
 		t.Errorf("a failed closing line should be logged, logged:\n%s", logs)
 	}
 }
+
+func TestPosterTypedMessagesGoInOrderWithCaptions(t *testing.T) {
+	thread := newFakeThread()
+	p := newTestPoster(t, thread)
+
+	p.Caption(1, "so", false)                       // Sam starts talking
+	p.Typed(500, "**Jo (typed):** can you hear me") // Jo types while Sam's talking
+	p.Caption(1, "So anyway.", true)
+	p.SignOff("⏹️ end")
+	finish(t, p)
+
+	wantShown(t, thread, "**Sam:** So anyway.", "**Jo (typed):** can you hear me", "⏹️ end")
+}
+
+func TestPosterEditTypedBeforeItsPosted(t *testing.T) {
+	thread := newFakeThread()
+	thread.gate = make(chan struct{})
+	p := newTestPoster(t, thread)
+
+	p.Typed(500, "**Jo (typed):** helo")
+	waitUntil(t, "the post is stuck waiting on Discord", func() bool { return thread.waitingCount() == 1 })
+	p.EditTyped(500, "**Jo (typed):** hello")
+	close(thread.gate)
+	finish(t, p)
+
+	wantShown(t, thread, "**Jo (typed):** hello")
+}
+
+func TestPosterEditTypedAfterItsSent(t *testing.T) {
+	thread := newFakeThread()
+	p := newTestPoster(t, thread)
+
+	p.Typed(500, "**Jo (typed):** helo")
+	waitUntil(t, "the copy is posted and finished with", func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return len(thread.shown()) == 1 && len(p.queue) == 0
+	})
+	p.EditTyped(500, "**Jo (typed):** hello")
+	finish(t, p)
+
+	wantShown(t, thread, "**Jo (typed):** hello")
+	if creates, edits := thread.callCount(); creates != 1 || edits != 1 {
+		t.Errorf("want the copy posted once then edited, got %d creates and %d edits", creates, edits)
+	}
+}
+
+// A copy that couldn't be posted gets a fresh try when its original is edited.
+func TestPosterEditTypedRetriesAGivenUpCopy(t *testing.T) {
+	captureLog(t)
+	thread := newFakeThread()
+	thread.failCreates = maxCaptionFailures
+	p := newTestPoster(t, thread)
+	p.editEvery = 10 * time.Millisecond
+
+	p.Typed(500, "**Jo (typed):** helo")
+	waitUntil(t, "the copy is given up on", func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return len(p.queue) == 0
+	})
+	p.EditTyped(500, "**Jo (typed):** hello")
+	finish(t, p)
+
+	wantShown(t, thread, "**Jo (typed):** hello")
+}
+
+func TestPosterEditTypedIgnoresMessagesItNeverCopied(t *testing.T) {
+	thread := newFakeThread()
+	p := newTestPoster(t, thread)
+
+	p.EditTyped(999, "**Jo (typed):** not copied")
+	finish(t, p)
+
+	wantShown(t, thread)
+}

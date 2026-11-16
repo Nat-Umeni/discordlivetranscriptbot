@@ -73,6 +73,9 @@ func main() {
 		bot.WithEventListenerFunc(captionBot.OnVoiceJoin),
 		bot.WithEventListenerFunc(captionBot.OnVoiceLeave),
 		bot.WithEventListenerFunc(captionBot.OnVoiceMove),
+		// Messages typed in a captioned call's chat are copied into its thread.
+		bot.WithEventListenerFunc(captionBot.OnMessageCreate),
+		bot.WithEventListenerFunc(captionBot.OnMessageUpdate),
 	)
 	if err != nil {
 		log.Fatal(err)

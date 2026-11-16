@@ -165,9 +165,9 @@ func deleteOwnMessage(client *bot.Client, channelID, messageID snowflake.ID) {
 }
 
 // callNotice goes in the call's own chat, so the people in it know they're
-// being captioned, where the captions are, and how to opt out. It links to the
-// captions thread, or to the captions channel while threadID is 0 (the thread
-// isn't made yet).
+// being captioned, where the captions are, that what they type there is copied
+// in too, and how to opt out. It links to the captions thread, or to the
+// captions channel while threadID is 0 (the thread isn't made yet).
 func callNotice(call captionsCall, threadID snowflake.ID) string {
 	captionsAt := call.captionsChannelID
 	if threadID != 0 {
@@ -176,6 +176,7 @@ func callNotice(call captionsCall, threadID snowflake.ID) string {
 	return fmt.Sprintf("🔴 **This call is being captioned live** so everyone can follow along, "+
 		"including members who are Deaf or hard of hearing. Captions are in %s.\n"+
 		"I only keep the text: audio is never recorded or stored.\n"+
+		"Rather type? What you send in this chat goes into the captions too.\n"+
 		"%s",
 		discord.ChannelMention(captionsAt), optOutLine(call.noCaptionsRoleID))
 }

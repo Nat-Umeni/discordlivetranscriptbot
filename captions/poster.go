@@ -26,12 +26,15 @@ const (
 )
 
 // liveCaption is one message in the captions thread: a sentence someone is
-// saying or has said, or a one-off "isn't being captioned" notice.
+// saying or has said, a one-off "isn't being captioned" notice, or a copy of a
+// message someone typed in the call's chat.
 type liveCaption struct {
 	userID snowflake.ID
 	text   string // the newest text
 	final  bool   // the sentence has ended
 	notice bool   // a one-off notice rather than a caption
+	ready  bool   // text is the whole message, used as it is (typed messages)
+	queued bool   // in the poster's queue (false once fully sent and forgotten)
 
 	messageID snowflake.ID // 0 until it's been posted
 	sentText  string       // what Discord is showing now
@@ -58,6 +61,7 @@ type ThreadPoster struct {
 	mu    sync.Mutex
 	queue []*liveCaption                // oldest first: the order people started talking
 	open  map[snowflake.ID]*liveCaption // each speaker's unfinished sentence
+	typed map[snowflake.ID]*liveCaption // copies of typed messages, by the original's ID
 
 	// signOff is posted after the last caption once the call has ended, e.g.
 	// "Captions stopped by Sam." stopped is true once the worker has taken it,
@@ -80,6 +84,7 @@ func NewThreadPoster(restClient rest.Rest, threadID snowflake.ID, nameFor NameFu
 		nameFor:   nameFor,
 		editEvery: captionEditEvery,
 		open:      make(map[snowflake.ID]*liveCaption),
+		typed:     make(map[snowflake.ID]*liveCaption),
 		// Room for one nudge: if one is already waiting, the worker will see
 		// this text too, so a second isn't needed.
 		wake:     make(chan struct{}, 1),
@@ -98,7 +103,7 @@ func (p *ThreadPoster) Caption(userID snowflake.ID, text string, final bool) {
 	c, found := p.open[userID]
 	if !found {
 		// Their first words since their last sentence ended: a new message.
-		c = &liveCaption{userID: userID}
+		c = &liveCaption{userID: userID, queued: true}
 		p.queue = append(p.queue, c)
 		p.open[userID] = c
 	}
@@ -114,7 +119,42 @@ func (p *ThreadPoster) Caption(userID snowflake.ID, text string, final bool) {
 
 func (p *ThreadPoster) NotCaptioned(userID snowflake.ID) {
 	p.mu.Lock()
-	p.queue = append(p.queue, &liveCaption{userID: userID, notice: true, final: true})
+	p.queue = append(p.queue, &liveCaption{userID: userID, notice: true, final: true, queued: true})
+	p.mu.Unlock()
+
+	p.nudge()
+}
+
+// Typed queues a copy of a message someone typed in the call's chat. content is
+// the whole message, ready to post. It joins the same queue as the captions, so
+// it lands in order with them. sourceID is the original message's ID, for
+// EditTyped.
+func (p *ThreadPoster) Typed(sourceID snowflake.ID, content string) {
+	p.mu.Lock()
+	c := &liveCaption{text: content, final: true, ready: true, queued: true}
+	p.queue = append(p.queue, c)
+	p.typed[sourceID] = c
+	p.mu.Unlock()
+
+	p.nudge()
+}
+
+// EditTyped updates the copy of a typed message after its original was
+// edited. Messages the poster never copied are ignored.
+func (p *ThreadPoster) EditTyped(sourceID snowflake.ID, content string) {
+	p.mu.Lock()
+	c, found := p.typed[sourceID]
+	if !found {
+		p.mu.Unlock()
+		return
+	}
+	c.text = content
+	c.failures = 0 // a fresh try, even if posting it had been given up on
+	if !c.queued {
+		// Already posted and forgotten: back in the queue to be edited.
+		c.queued = true
+		p.queue = append(p.queue, c)
+	}
 	p.mu.Unlock()
 
 	p.nudge()
@@ -271,9 +311,11 @@ func (p *ThreadPoster) forgetFinished() {
 				delete(p.open, c.userID)
 			}
 		}
-		if !fullySent && !givenUp {
-			kept = append(kept, c)
+		if fullySent || givenUp {
+			c.queued = false
+			continue
 		}
+		kept = append(kept, c)
 	}
 	// Clear the dropped tail so the old captions can be freed.
 	clear(p.queue[len(kept):])
@@ -283,7 +325,10 @@ func (p *ThreadPoster) forgetFinished() {
 // send posts or edits one caption. It talks to Discord without holding p.mu,
 // so the transcriber is never kept waiting.
 func (p *ThreadPoster) send(c *liveCaption, snapshot captionSnapshot) {
-	content := Message(p.nameFor(c.userID), snapshot.text, snapshot.final, c.notice)
+	content := snapshot.text
+	if !c.ready {
+		content = Message(p.nameFor(c.userID), snapshot.text, snapshot.final, c.notice)
+	}
 
 	messageID := snapshot.messageID
 	var err error
