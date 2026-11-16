@@ -29,12 +29,15 @@ func (env *testEnv) startCaptions(t *testing.T) *liveCall {
 	return call
 }
 
-// waitForPosters waits until every poster has sent everything, so the fake
-// Discord can be read safely.
+// waitForPosters waits until every poster has sent everything and every
+// transcript is posted, so the fake Discord can be read safely.
 func (env *testEnv) waitForPosters(t *testing.T) {
 	t.Helper()
 	if !captions.WaitForPosters(&env.bot.posters, 5*time.Second) {
 		t.Fatal("the posters never finished")
+	}
+	if !captions.WaitForPosters(&env.bot.transcripts, 5*time.Second) {
+		t.Fatal("the transcripts never finished")
 	}
 }
 
@@ -65,17 +68,17 @@ func (env *testEnv) sessionEnded(t *testing.T) {
 	}
 }
 
-// wantEndedWith checks a call ended tidily: the closing line is the last thing
-// in the thread, the call's notice says captions have ended, the status is
-// cleared, the bot left and the session is gone.
+// wantEndedWith checks a call ended tidily: the closing line comes after the
+// last caption, then the transcript; the call's notice says captions have
+// ended, the status is cleared, the bot left and the session is gone.
 func wantEndedWith(t *testing.T, env *testEnv, closingLine string) {
 	t.Helper()
 	env.sessionEnded(t)
 	env.waitForPosters(t)
 
 	messages := env.threadMessages()
-	if len(messages) == 0 || messages[len(messages)-1] != closingLine {
-		t.Errorf("the thread should end with %q, got %q", closingLine, messages)
+	if len(messages) < 2 || messages[len(messages)-2] != closingLine || messages[len(messages)-1] != transcriptHeading {
+		t.Errorf("the thread should end with %q then the transcript, got %q", closingLine, messages)
 	}
 
 	ended := false
@@ -123,7 +126,7 @@ func TestStopEndsWithAClosingLineAfterTheLastCaption(t *testing.T) {
 
 	wantEndedWith(t, env, "⏹️ **Captions stopped** by caller.")
 	messages := env.threadMessages()
-	if len(messages) < 2 || messages[len(messages)-2] != "**Sam:** Last thing." {
+	if len(messages) < 3 || messages[len(messages)-3] != "**Sam:** Last thing." {
 		t.Errorf("the last caption should come just before the closing line, thread %q", messages)
 	}
 }

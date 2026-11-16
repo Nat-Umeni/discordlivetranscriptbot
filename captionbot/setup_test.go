@@ -136,7 +136,7 @@ func TestCaptionsSetupRefusesAChannelTheBotCantPostIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	onlyReply(t, sent, "I can't post captions in "+discord.ChannelMention(lockedCaptionsChannelID)+
-		". Ask an admin to give me View Channel, Send Messages, Create Public Threads and Send Messages in Threads there.")
+		". Ask an admin to give me View Channel, Send Messages, Create Public Threads, Send Messages in Threads, Read Message History and Attach Files there.")
 	if got, _ := env.bot.settings.CaptionsChannel(serverID); got != captionsChannelID {
 		t.Errorf("the refused channel must not be saved, got %v", got)
 	}

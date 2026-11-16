@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/disgoorg/disgo/cache"
+	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/snowflake/v2"
 )
 
@@ -33,5 +34,28 @@ func MemberNames(caches cache.Caches, serverID snowflake.ID) NameFunc {
 		// Their nickname in this server, else their display name, else their
 		// username: the name people see next to them in the call.
 		return member.EffectiveName()
+	}
+}
+
+// SenderName is the name people see next to a message's sender in its server:
+// their nickname there, else their display name, else their username. It
+// comes from the message itself, so it works for anyone, in the call or not.
+func SenderName(message discord.Message) string {
+	if message.Member != nil && message.Member.Nick != nil {
+		return *message.Member.Nick
+	}
+	return message.Author.EffectiveName()
+}
+
+// AttachmentNote notes files sent with a message, linking to the original so
+// readers can open them. Empty if there were none.
+func AttachmentNote(message discord.Message) string {
+	switch count := len(message.Attachments); count {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf("*[sent an attachment: %s]*", message.JumpURL())
+	default:
+		return fmt.Sprintf("*[sent %d attachments: %s]*", count, message.JumpURL())
 	}
 }

@@ -3,6 +3,7 @@ package captionbot
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/disgoorg/snowflake/v2"
 
@@ -34,11 +35,9 @@ func TestShutDownClearsStatusesLeavesCallsAndWaitsForCaptions(t *testing.T) {
 }
 
 func TestShutDownGivesUpWaitingOnAStuckPoster(t *testing.T) {
-	if testing.Short() {
-		t.Skip("waits the full 5 s shutdown timeout")
-	}
 	logs := captureLog(t)
 	env := newTestEnv(t)
+	env.bot.shutdownWait = 20 * time.Millisecond
 	poster := captions.NewThreadPoster(env.rest, threadID, func(snowflake.ID) string { return "Sam" }, &env.bot.posters)
 	defer poster.Closed()
 
@@ -66,5 +65,19 @@ func TestShutdownClearsEveryCallsStatus(t *testing.T) {
 	}
 	if len(cleared) != 2 || !cleared[meetingChannelID] || !cleared[otherCall] {
 		t.Errorf("want both calls' statuses cleared, cleared %v", cleared)
+	}
+}
+
+func TestShutDownGivesUpWaitingOnAStuckTranscript(t *testing.T) {
+	logs := captureLog(t)
+	env := newTestEnv(t)
+	env.bot.shutdownWait = 20 * time.Millisecond
+	env.bot.transcripts.Add(1) // a transcript that never finishes
+	defer env.bot.transcripts.Done()
+
+	env.bot.ShutDown(env.client)
+
+	if !strings.Contains(logs.String(), "some transcripts were still being posted when I shut down") {
+		t.Errorf("a stuck transcript should be logged, not wait forever, logged:\n%s", logs)
 	}
 }

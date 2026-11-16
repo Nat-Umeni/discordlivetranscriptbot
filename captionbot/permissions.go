@@ -59,7 +59,8 @@ func checkBotCanPostCaptions(e *handler.CommandEvent, serverID, channelID snowfl
 // can't post captions in a channel.
 func missingCaptionsPermissionsMessage(channelID snowflake.ID) string {
 	return fmt.Sprintf("I can't post captions in %s. Ask an admin to give me View Channel, Send Messages, "+
-		"Create Public Threads and Send Messages in Threads there.", discord.ChannelMention(channelID))
+		"Create Public Threads, Send Messages in Threads, Read Message History and Attach Files there.",
+		discord.ChannelMention(channelID))
 }
 
 // botPermissionsIn works out the bot's permissions in one channel, from disgo's

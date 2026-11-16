@@ -82,10 +82,18 @@ func Fixed(speaker, text string, tags []string, fixer string) (string, error) {
 }
 
 // Parse reads the speaker and text back out of a caption message
-// ("**Sam:** text", maybe with a "fixed by" line under it), so a fix can
-// start from what's there. ok is false for anything that isn't a caption,
-// like the thread's opening post or a notice.
+// ("**Sam:** text", maybe with a "fixed by" line under it), as they were
+// typed, so a fix can start from what's there. ok is false for anything that
+// isn't a caption, like the thread's opening post or a notice.
 func Parse(content string) (speaker, text string, ok bool) {
+	speaker, text, ok = Split(content)
+	return UnescapeMarkdown(speaker), UnescapeMarkdown(text), ok
+}
+
+// Split is Parse without undoing the markdown escaping: the speaker and text
+// exactly as the message holds them, ready to go into another markdown
+// document.
+func Split(content string) (speaker, text string, ok bool) {
 	if i := strings.LastIndex(content, "\n"+fixedByPrefix); i >= 0 {
 		content = content[:i]
 	}
@@ -93,16 +101,10 @@ func Parse(content string) (speaker, text string, ok bool) {
 		return "", "", false
 	}
 	end := strings.Index(content, ":** ")
-	if end < 0 {
-		return "", "", false
+	if end < len("**")+1 {
+		return "", "", false // not there, or no name before it
 	}
-
-	speaker = UnescapeMarkdown(content[len("**"):end])
-	text = UnescapeMarkdown(content[end+len(":** "):])
-	if speaker == "" {
-		return "", "", false
-	}
-	return speaker, text, true
+	return content[len("**"):end], content[end+len(":** "):], true
 }
 
 // markdownEscaper puts a backslash before the characters Discord treats as

@@ -2,6 +2,7 @@ package captionbot
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,9 +11,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/disgoorg/disgo/bot"
 	"github.com/disgoorg/disgo/cache"
@@ -178,15 +181,19 @@ type fakeRest struct {
 	threadMembers []postedMessage // people added to threads: channelID is the thread, messageID the user
 	addMemberErr  error
 
-	messages  map[snowflake.ID]discord.Message // what GetMessage finds
-	getErr    error
-	responses []string // edits to a deferred interaction response (the hidden "thinking…" reply)
+	messages map[snowflake.ID]discord.Message // what GetMessage finds
+	getErr   error
+
+	comments   []discord.Message // other people's messages in channels, for GetMessages
+	historyErr error             // reading a channel's messages back fails
+	responses  []string          // edits to a deferred interaction response (the hidden "thinking…" reply)
 }
 
 type postedMessage struct {
 	channelID snowflake.ID
 	messageID snowflake.ID
 	message   discord.MessageCreate
+	files     map[string]string // attached files' names and contents
 }
 
 type startedThread struct {
@@ -209,7 +216,15 @@ func (r *fakeRest) CreateMessage(channelID snowflake.ID, messageCreate discord.M
 			}
 		}
 	}
-	r.posted = append(r.posted, postedMessage{channelID, messageID, messageCreate})
+	var files map[string]string
+	for _, file := range messageCreate.Files {
+		if files == nil {
+			files = map[string]string{}
+		}
+		content, _ := io.ReadAll(file.Reader)
+		files[file.Name] = string(content)
+	}
+	r.posted = append(r.posted, postedMessage{channelID, messageID, messageCreate, files})
 	if err := r.postErrIn[channelID]; err != nil {
 		return nil, err
 	}
@@ -232,7 +247,11 @@ func (r *fakeRest) CreateThread(channelID snowflake.ID, create discord.ThreadCre
 	}
 	// GuildThread's ID field is private, so build it from JSON like disgo does.
 	var thread discord.GuildThread
-	raw := fmt.Sprintf(`{"id":"%d","type":11,"guild_id":"%d","parent_id":"%d"}`, threadID, serverID, channelID)
+	name := ""
+	if public, ok := create.(discord.GuildPublicThreadCreate); ok {
+		name = public.Name
+	}
+	raw := fmt.Sprintf(`{"id":"%d","type":11,"guild_id":"%d","parent_id":"%d","name":%q}`, threadID, serverID, channelID, name)
 	if err := json.Unmarshal([]byte(raw), &thread); err != nil {
 		return nil, err
 	}
@@ -270,6 +289,56 @@ func (r *fakeRest) UpdateInteractionResponse(_ snowflake.ID, _ string, update di
 	defer r.mu.Unlock()
 	r.responses = append(r.responses, *update.Content)
 	return &discord.Message{}, nil
+}
+
+// postedAt is when the fake says each of the bot's posts was made: a minute
+// apart from 21:05 on the day of the test call.
+var postedAt = time.Date(2026, 11, 15, 21, 5, 0, 0, time.UTC)
+
+// GetMessages reads a channel back the way Discord does: everything the bot
+// posted there (with its edits) and anyone else's messages, at most limit at a
+// time after the given ID, newest first (the caller has to sort them).
+func (r *fakeRest) GetMessages(channelID, _, _, after snowflake.ID, limit int, _ ...rest.RequestOpt) ([]discord.Message, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.historyErr != nil {
+		return nil, r.historyErr
+	}
+
+	var all []discord.Message
+	for i, posted := range r.posted {
+		if posted.channelID != channelID {
+			continue
+		}
+		content := posted.message.Content
+		for _, edit := range r.edits {
+			if edit.channelID == channelID && edit.messageID == posted.messageID {
+				content = edit.message.Content
+			}
+		}
+		all = append(all, discord.Message{
+			ID: posted.messageID, ChannelID: channelID, Type: discord.MessageTypeDefault,
+			Author:      discord.User{ID: botID, Bot: true},
+			Content:     content,
+			CreatedAt:   postedAt.Add(time.Duration(i) * time.Minute),
+			Attachments: make([]discord.Attachment, len(posted.files)),
+		})
+	}
+	for _, comment := range r.comments {
+		if comment.ChannelID == channelID {
+			all = append(all, comment)
+		}
+	}
+
+	slices.SortFunc(all, func(a, b discord.Message) int { return cmp.Compare(a.ID, b.ID) })
+	var page []discord.Message
+	for _, message := range all {
+		if message.ID > after && len(page) < limit {
+			page = append(page, message)
+		}
+	}
+	slices.Reverse(page)
+	return page, nil
 }
 
 func (r *fakeRest) AddThreadMember(threadID, userID snowflake.ID, _ ...rest.RequestOpt) error {
@@ -365,6 +434,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	// No speech model in handler tests: the transcriber only needs it once
 	// someone talks.
 	env.bot = New(nil, nil)
+	env.bot.timezone = time.UTC // so transcript times don't depend on where tests run
 	env.useSettingsFile(t, filepath.Join(t.TempDir(), "settings.json"))
 	if err := env.bot.settings.SetCaptionsChannel(serverID, captionsChannelID); err != nil {
 		t.Fatal(err)
@@ -446,6 +516,7 @@ type caller struct {
 	roles       []snowflake.ID
 	permissions discord.Permissions
 	inDM        bool
+	inChannel   string // the channel the command was run in, as Discord's JSON
 }
 
 var (
@@ -506,9 +577,13 @@ func (env *testEnv) command(t *testing.T, who caller, data string) (*handler.Com
 		if who.roles == nil {
 			roles = []byte("[]")
 		}
-		raw = fmt.Sprintf(`{"id":"9","type":2,"application_id":"8","token":"tok","version":1,"guild_id":"%d",`+
+		channel := ""
+		if who.inChannel != "" {
+			channel = `"channel":` + who.inChannel + `,`
+		}
+		raw = fmt.Sprintf(`{"id":"9","type":2,"application_id":"8","token":"tok","version":1,"guild_id":"%d",%s`+
 			`"member":{"user":{"id":"%d","username":"caller"},"roles":%s,"permissions":"%d"},"data":%s}`,
-			serverID, who.id, roles, who.permissions, data)
+			serverID, channel, who.id, roles, who.permissions, data)
 	}
 
 	var interaction discord.ApplicationCommandInteraction

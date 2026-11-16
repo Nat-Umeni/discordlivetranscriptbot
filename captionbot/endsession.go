@@ -40,6 +40,7 @@ type liveCall struct {
 	poster         *captions.ThreadPoster
 	voiceChannelID snowflake.ID
 	threadID       snowflake.ID
+	threadName     string // the transcript's title
 	noticeID       snowflake.ID
 	emptyCountdown *emptyCountdown // nil unless the call is empty
 }
@@ -82,7 +83,8 @@ func (b *Bot) takeCall(serverID snowflake.ID) *liveCall {
 //     they're still being captioned
 //  3. clear the call's status
 //  4. leave the call: that closes the transcriber, which finishes everyone's
-//     last sentence and closes the poster, which posts them then the line
+//     last sentence and closes the poster, which posts them then the line;
+//     once that's done the transcript files are posted (in the background)
 //  5. forget the session, last, so a new start can't slip in while leaving
 //
 // Steps 2 and 3 are best effort: if Discord refuses, it's logged and the bot
@@ -96,6 +98,7 @@ func (b *Bot) endSession(client *bot.Client, serverID snowflake.ID, closingLine 
 	if call := b.takeCall(serverID); call != nil {
 		call.poster.SignOff(closingLine)
 		markNoticeEnded(client, call.voiceChannelID, call.noticeID, call.threadID)
+		b.transcriptWhenPosted(client, call)
 	}
 
 	// While the bot is still in the call: setting a call's status needs it

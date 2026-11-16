@@ -74,7 +74,7 @@ func isPersonsMessage(message discord.Message) bool {
 // there's nothing to copy (no text and no files).
 func typedMessage(message discord.Message) (content string, ok bool) {
 	text := strings.TrimSpace(message.Content)
-	note := attachmentNote(message)
+	note := captions.AttachmentNote(message)
 	if text == "" && note == "" {
 		return "", false
 	}
@@ -82,31 +82,8 @@ func typedMessage(message discord.Message) (content string, ok bool) {
 		note = " " + note
 	}
 
-	prefix := fmt.Sprintf("**%s (typed):** ", captions.EscapeMarkdown(typedName(message)))
+	prefix := fmt.Sprintf("**%s (typed):** ", captions.EscapeMarkdown(captions.SenderName(message)))
 	// Cut the text, not the name or the note, to fit Discord's limit.
 	room := captions.MaxMessageLength - utf8.RuneCountInString(prefix) - utf8.RuneCountInString(note)
 	return prefix + captions.CutToLength(text, room) + note, true
-}
-
-// attachmentNote notes files sent with a message, linking to the original so
-// readers can open them. Empty if there were none.
-func attachmentNote(message discord.Message) string {
-	switch count := len(message.Attachments); count {
-	case 0:
-		return ""
-	case 1:
-		return fmt.Sprintf("*[sent an attachment: %s]*", message.JumpURL())
-	default:
-		return fmt.Sprintf("*[sent %d attachments: %s]*", count, message.JumpURL())
-	}
-}
-
-// typedName is the name people see next to the sender in this server: their
-// nickname here, else their display name, else their username. It comes from
-// the message itself, so it works for people typing from outside the call too.
-func typedName(message discord.Message) string {
-	if message.Member != nil && message.Member.Nick != nil {
-		return *message.Member.Nick
-	}
-	return message.Author.EffectiveName()
 }

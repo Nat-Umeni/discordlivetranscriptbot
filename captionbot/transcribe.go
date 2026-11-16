@@ -174,6 +174,7 @@ func (b *Bot) onTranscribeStart(e *handler.CommandEvent) error {
 		poster:         poster,
 		voiceChannelID: *voiceState.ChannelID,
 		threadID:       thread.ID(),
+		threadName:     thread.Name(),
 		noticeID:       noticeID,
 	})
 

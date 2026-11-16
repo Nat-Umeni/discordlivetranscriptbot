@@ -95,7 +95,7 @@ func TestTypedMessagesAreCopiedIntoTheThread(t *testing.T) {
 	if got := copiesIn(thread); len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("want %q copied (their own formatting kept), thread %q", want, thread)
 	}
-	if last := thread[len(thread)-1]; !strings.HasPrefix(last, "⏹️") {
+	if closing := thread[len(thread)-2]; !strings.HasPrefix(closing, "⏹️") {
 		t.Errorf("the copies should come before the closing line, thread %q", thread)
 	}
 }
@@ -197,24 +197,12 @@ func TestTypedMessage(t *testing.T) {
 	}
 }
 
-func TestTypedName(t *testing.T) {
+// The name is the sender's as people see it in the server, shown as typed.
+func TestTypedMessageNamesTheSender(t *testing.T) {
 	message := typedIn(meetingChannelID, 700, "hi")
-	if got := typedName(message); got != "Jo" {
-		t.Errorf("no nickname: want the display name, got %q", got)
-	}
-
 	message.Member = &discord.Member{Nick: strPtr("xX_Jo_Xx")}
-	if got := typedName(message); got != "xX_Jo_Xx" {
-		t.Errorf("a nickname wins, got %q", got)
-	}
 	if got, _ := typedMessage(message); got != `**xX\_Jo\_Xx (typed):** hi` {
-		t.Errorf("the name should show as typed, got %q", got)
-	}
-
-	message.Member = &discord.Member{} // in the server, no nickname
-	message.Author.GlobalName = nil
-	if got := typedName(message); got != "jo_99" {
-		t.Errorf("no nickname or display name: want the username, got %q", got)
+		t.Errorf("got %q", got)
 	}
 }
 

@@ -12,12 +12,15 @@ import (
 	"livetranscribebot/captions"
 )
 
-// The permissions the bot needs in the captions channel: see it, post the
-// opening message, start a thread from it, and post captions in the thread.
+// The permissions the bot needs in the captions channel: see it, post in it,
+// start a thread there, post captions in the thread, and read the thread back
+// and attach its transcript files.
 const captionsPermissions = discord.PermissionViewChannel |
 	discord.PermissionSendMessages |
 	discord.PermissionCreatePublicThreads |
-	discord.PermissionSendMessagesInThreads
+	discord.PermissionSendMessagesInThreads |
+	discord.PermissionReadMessageHistory |
+	discord.PermissionAttachFiles
 
 // The permissions the bot needs in the call: see and join it, post the
 // captioning notice in its chat, and set its status.

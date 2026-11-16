@@ -109,3 +109,14 @@ func TestCutToLength(t *testing.T) {
 		t.Errorf("want 5 characters ending in …, counting the emoji as one, got %q", got)
 	}
 }
+
+// Split gives the caption's parts exactly as the message holds them.
+func TestSplit(t *testing.T) {
+	speaker, text, ok := Split(`**xX\_Sam\_Xx:** a \*b\*` + "\n-# ✏️ fixed by Jo")
+	if !ok || speaker != `xX\_Sam\_Xx` || text != `a \*b\*` {
+		t.Errorf("got (%q, %q, %v)", speaker, text, ok)
+	}
+	if _, _, ok := Split("**:** no name"); ok {
+		t.Error("a caption needs a name")
+	}
+}

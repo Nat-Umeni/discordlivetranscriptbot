@@ -10,6 +10,10 @@ import (
 	"livetranscribebot/captions"
 )
 
+// shutdownTimeout is how long shutting down waits for the last captions, and
+// then the transcripts, to reach Discord.
+const shutdownTimeout = 15 * time.Second
+
 // ShutDown ends every running session so nothing is left half-done. The order
 // matters:
 //  1. end each session (closing line, notice marked ended, status cleared,
@@ -17,7 +21,7 @@ import (
 //     hands it to its poster
 //  2. close any voice connection still open
 //  3. give the posters a few seconds to get the last captions and closing
-//     lines into the threads
+//     lines into the threads, then the transcripts a few more to be posted
 //  4. only then close the client: once its connection to Discord is closed,
 //     anything still trying to post would hang
 func (b *Bot) ShutDown(client *bot.Client) {
@@ -28,8 +32,13 @@ func (b *Bot) ShutDown(client *bot.Client) {
 		b.endSession(client, serverID, shutdownLine)
 	}
 	client.VoiceManager.Close(ctx)
-	if !captions.WaitForPosters(&b.posters, 5*time.Second) {
+	if !captions.WaitForPosters(&b.posters, b.shutdownWait) {
 		log.Printf("some captions were still being posted when I shut down")
+	}
+	// Transcripts are posted once their call's captions are in, so this comes
+	// after the posters. (WaitForPosters works for any WaitGroup.)
+	if !captions.WaitForPosters(&b.transcripts, b.shutdownWait) {
+		log.Printf("some transcripts were still being posted when I shut down")
 	}
 	client.Close(ctx)
 }

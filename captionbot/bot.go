@@ -40,6 +40,19 @@ type Bot struct {
 	// emptyCallWait is how long a call can have nobody in it before its
 	// captions stop by themselves (emptyCallTimeout; tests shorten it).
 	emptyCallWait time.Duration
+
+	// transcripts counts transcripts still being built and posted, so
+	// shutdown can wait for them. posterWait is how long a transcript waits
+	// for its call's last captions to be posted first (posterTimeout; tests
+	// shorten it). timezone is what the transcript's times are shown in.
+	transcripts sync.WaitGroup
+	posterWait  time.Duration
+	timezone    *time.Location
+
+	// shutdownWait is how long shutting down waits for the last captions,
+	// and then the transcripts, to be posted (shutdownTimeout; tests shorten
+	// it).
+	shutdownWait time.Duration
 }
 
 // New makes a Bot with no sessions running. recogniser is the speech model,
@@ -51,6 +64,9 @@ func New(serverSettings *settings.Store, recogniser *sherpa.OnlineRecognizer) *B
 		recogniser:    recogniser,
 		calls:         make(map[snowflake.ID]*liveCall),
 		emptyCallWait: emptyCallTimeout,
+		posterWait:    posterTimeout,
+		timezone:      time.Local,
+		shutdownWait:  shutdownTimeout,
 	}
 }
 
@@ -74,6 +90,10 @@ var Commands = []discord.ApplicationCommandCreate{
 			discord.ApplicationCommandOptionSubCommand{
 				Name:        "stop",
 				Description: "Tells the currently active transcriber bot to wrap up notes and leave the vc",
+			},
+			discord.ApplicationCommandOptionSubCommand{
+				Name:        "export",
+				Description: "Rebuild this captions thread's transcript files (run it inside the thread)",
 			},
 		},
 	},
@@ -120,6 +140,7 @@ func (b *Bot) Router() *handler.Mux {
 	r.Route("/transcribe", func(r handler.Router) {
 		r.Command("/start", b.onTranscribeStart)
 		r.Command("/stop", b.onTranscribeStop)
+		r.Command("/export", b.onTranscribeExport)
 	})
 	r.Command("/captions-setup", b.onCaptionsSetup)
 	r.MessageCommand("/Fix caption", b.onFixCaption)
