@@ -55,7 +55,7 @@ func TestShutdownClearsEveryCallsStatus(t *testing.T) {
 	env.bot.sessions.Start(serverID, sessions.Session{StartedBy: callerID, ChannelID: meetingChannelID, Title: "A"})
 	env.bot.sessions.Start(otherServer, sessions.Session{StartedBy: callerID, ChannelID: otherCall, Title: "B"})
 
-	env.bot.clearStatusesOnShutdown(env.client)
+	env.bot.ShutDown(env.client)
 
 	cleared := map[snowflake.ID]bool{}
 	for _, status := range env.rest.statuses {

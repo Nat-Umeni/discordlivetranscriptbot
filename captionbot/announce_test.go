@@ -99,7 +99,7 @@ func TestAnnounceCaptionsWhenTheCleanupFailsToo(t *testing.T) {
 		deleteErr: errors.New("delete refused"),
 	}
 
-	_, err := announceCaptions(&bot.Client{Rest: fake}, testCall)
+	_, _, err := announceCaptions(&bot.Client{Rest: fake}, testCall)
 
 	if err == nil || !strings.Contains(err.Error(), "post refused") {
 		t.Fatalf("want the opening post's error back, got %v", err)
@@ -115,7 +115,7 @@ func TestAnnounceCaptionsLogsAFailedStatus(t *testing.T) {
 	logs := captureLog(t)
 	fake := &fakeRest{statusErr: errors.New("status refused")}
 
-	thread, err := announceCaptions(&bot.Client{Rest: fake}, testCall)
+	thread, _, err := announceCaptions(&bot.Client{Rest: fake}, testCall)
 
 	if err != nil || thread == nil {
 		t.Fatalf("a failed status shouldn't stop captions, got (%v, %v)", thread, err)

@@ -68,9 +68,11 @@ func main() {
 			cache.FlagGuilds,
 		)),
 		bot.WithEventListeners(captionBot.Router()),
-		// stop the session if someone else disconnects or moves the bot
-		bot.WithEventListenerFunc(captionBot.OnBotLeftVoice),
-		bot.WithEventListenerFunc(captionBot.OnBotMovedVoice),
+		// Joins, leaves and moves: someone else disconnecting or moving the bot
+		// ends its session, and a call left empty for a minute ends too.
+		bot.WithEventListenerFunc(captionBot.OnVoiceJoin),
+		bot.WithEventListenerFunc(captionBot.OnVoiceLeave),
+		bot.WithEventListenerFunc(captionBot.OnVoiceMove),
 	)
 	if err != nil {
 		log.Fatal(err)

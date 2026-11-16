@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/disgoorg/disgo/bot"
@@ -90,11 +91,15 @@ func (c *fakeConn) Open(_ context.Context, channelID snowflake.ID, selfMute bool
 	return nil
 }
 
-// Close mirrors disgo: it leaves voice and removes the connection from the manager.
+// Close mirrors disgo: it leaves voice, removes the connection from the manager,
+// and closes the receiver (so a transcriber finishes everyone's last sentence).
 func (c *fakeConn) Close(context.Context) {
 	c.closed = true
 	c.channelID = nil
 	delete(c.manager.conns, c.guildID)
+	if c.receiver != nil {
+		c.receiver.Close()
+	}
 	if c.onClose != nil {
 		c.onClose()
 	}
@@ -147,6 +152,10 @@ func (m *fakeVoiceManager) connectBot(guildID, channelID snowflake.ID) *fakeConn
 // Discord. Each *Err field makes that call fail.
 type fakeRest struct {
 	rest.Rest
+	// mu: posters call in from their own goroutines while a test (or the
+	// handler it runs) does too.
+	mu sync.Mutex
+
 	followups   []discord.MessageCreate
 	followupErr error
 
@@ -186,6 +195,8 @@ type startedThread struct {
 }
 
 func (r *fakeRest) CreateMessage(channelID snowflake.ID, messageCreate discord.MessageCreate, _ ...rest.RequestOpt) (*discord.Message, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	messageID := noticeMessageID
 	if channelID == threadID {
 		messageID = introMessageID
@@ -198,11 +209,15 @@ func (r *fakeRest) CreateMessage(channelID snowflake.ID, messageCreate discord.M
 }
 
 func (r *fakeRest) SetVoiceChannelStatus(channelID snowflake.ID, update discord.VoiceChannelStatusUpdate, _ ...rest.RequestOpt) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.statuses = append(r.statuses, postedMessage{channelID: channelID, message: discord.MessageCreate{Content: update.Status}})
 	return r.statusErr
 }
 
 func (r *fakeRest) CreateThread(channelID snowflake.ID, create discord.ThreadCreate, _ ...rest.RequestOpt) (*discord.GuildThread, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.threads = append(r.threads, startedThread{channelID, create})
 	if r.threadErr != nil {
 		return nil, r.threadErr
@@ -220,6 +235,8 @@ func (r *fakeRest) CreateThread(channelID snowflake.ID, create discord.ThreadCre
 func (r *fakeRest) Close(context.Context) {}
 
 func (r *fakeRest) UpdateMessage(channelID, messageID snowflake.ID, update discord.MessageUpdate, _ ...rest.RequestOpt) (*discord.Message, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.edits = append(r.edits, postedMessage{channelID: channelID, messageID: messageID, message: discord.MessageCreate{Content: *update.Content}})
 	if r.editErr != nil {
 		return nil, r.editErr
@@ -228,6 +245,8 @@ func (r *fakeRest) UpdateMessage(channelID, messageID snowflake.ID, update disco
 }
 
 func (r *fakeRest) GetMessage(_ snowflake.ID, messageID snowflake.ID, _ ...rest.RequestOpt) (*discord.Message, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.getErr != nil {
 		return nil, r.getErr
 	}
@@ -239,26 +258,36 @@ func (r *fakeRest) GetMessage(_ snowflake.ID, messageID snowflake.ID, _ ...rest.
 }
 
 func (r *fakeRest) UpdateInteractionResponse(_ snowflake.ID, _ string, update discord.MessageUpdate, _ ...rest.RequestOpt) (*discord.Message, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.responses = append(r.responses, *update.Content)
 	return &discord.Message{}, nil
 }
 
 func (r *fakeRest) AddThreadMember(threadID, userID snowflake.ID, _ ...rest.RequestOpt) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.threadMembers = append(r.threadMembers, postedMessage{channelID: threadID, messageID: userID})
 	return r.addMemberErr
 }
 
 func (r *fakeRest) DeleteMessage(channelID, messageID snowflake.ID, _ ...rest.RequestOpt) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.deleted = append(r.deleted, postedMessage{channelID: channelID, messageID: messageID})
 	return r.deleteErr
 }
 
 func (r *fakeRest) DeleteChannel(channelID snowflake.ID, _ ...rest.RequestOpt) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.deletedThreads = append(r.deletedThreads, channelID)
 	return r.deleteErr
 }
 
 func (r *fakeRest) CreateFollowupMessage(_ snowflake.ID, _ string, messageCreate discord.MessageCreate, _ ...rest.RequestOpt) (*discord.Message, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.followups = append(r.followups, messageCreate)
 	if r.followupErr != nil {
 		return nil, r.followupErr

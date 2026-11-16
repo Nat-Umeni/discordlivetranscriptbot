@@ -375,3 +375,61 @@ func TestPosterConcurrentCallers(t *testing.T) {
 		}
 	}
 }
+
+func TestPosterClosingLineComesAfterTheLastCaption(t *testing.T) {
+	thread := newFakeThread()
+	thread.gate = make(chan struct{}) // Discord is slow while the call ends
+	p := newTestPoster(t, thread)
+
+	p.Caption(1, "so", false)
+	waitUntil(t, "the first post is stuck waiting on Discord", func() bool { return thread.waitingCount() == 1 })
+	p.Caption(1, "So that's it.", true)
+	p.SignOff("⏹️ **Captions stopped** by Sam.")
+
+	close(thread.gate)
+	finish(t, p)
+
+	wantShown(t, thread, "**Sam:** So that's it.", "⏹️ **Captions stopped** by Sam.")
+}
+
+func TestPosterWithoutASignOffPostsNoClosingLine(t *testing.T) {
+	thread := newFakeThread()
+	p := newTestPoster(t, thread)
+
+	p.Caption(1, "Bye.", true)
+	finish(t, p)
+
+	wantShown(t, thread, "**Sam:** Bye.")
+}
+
+// If the poster has already finished (the call ended before anyone said why),
+// the closing line still goes out, straight away.
+func TestPosterSignOffAfterFinishingPostsAtOnce(t *testing.T) {
+	thread := newFakeThread()
+	p := newTestPoster(t, thread)
+	p.Caption(1, "Bye.", true)
+	finish(t, p)
+
+	p.SignOff("⏹️ **Captions stopped:** everyone left the call.")
+
+	wantShown(t, thread, "**Sam:** Bye.", "⏹️ **Captions stopped:** everyone left the call.")
+}
+
+func TestPosterClosingLineFailingIsLogged(t *testing.T) {
+	logs := captureLog(t)
+	thread := newFakeThread()
+	p := newTestPoster(t, thread)
+	p.Caption(1, "Bye.", true)
+	waitUntil(t, "the caption is posted", func() bool { return len(thread.shown()) == 1 })
+
+	thread.mu.Lock()
+	thread.failCreates = 1
+	thread.mu.Unlock()
+	p.SignOff("⏹️ **Captions stopped** by Sam.")
+	finish(t, p)
+
+	wantShown(t, thread, "**Sam:** Bye.")
+	if !strings.Contains(logs.String(), "couldn't post the closing line in the captions thread") {
+		t.Errorf("a failed closing line should be logged, logged:\n%s", logs)
+	}
+}

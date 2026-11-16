@@ -5,6 +5,7 @@ package captionbot
 
 import (
 	"sync"
+	"time"
 
 	"github.com/disgoorg/disgo/bot"
 	"github.com/disgoorg/disgo/discord"
@@ -31,15 +32,25 @@ type Bot struct {
 	// posters counts captions threads still being posted to, so shutdown can
 	// wait for the last captions to reach Discord.
 	posters sync.WaitGroup
+
+	// calls holds what's needed to end each running call tidily, by server.
+	callsMu sync.Mutex
+	calls   map[snowflake.ID]*liveCall
+
+	// emptyCallWait is how long a call can have nobody in it before its
+	// captions stop by themselves (emptyCallTimeout; tests shorten it).
+	emptyCallWait time.Duration
 }
 
 // New makes a Bot with no sessions running. recogniser is the speech model,
 // loaded once and shared by every call.
 func New(serverSettings *settings.Store, recogniser *sherpa.OnlineRecognizer) *Bot {
 	return &Bot{
-		settings:   serverSettings,
-		sessions:   sessions.New(),
-		recogniser: recogniser,
+		settings:      serverSettings,
+		sessions:      sessions.New(),
+		recogniser:    recogniser,
+		calls:         make(map[snowflake.ID]*liveCall),
+		emptyCallWait: emptyCallTimeout,
 	}
 }
 
@@ -120,11 +131,10 @@ func (b *Bot) Router() *handler.Mux {
 
 // captionOutputs is where one call's captions go: posted and growing in its
 // captions thread, and logged to the terminal once finished, under each
-// speaker's name in this server.
-func (b *Bot) captionOutputs(client *bot.Client, serverID, threadID snowflake.ID) speech.Output {
+// speaker's name in this server. The thread's poster is also returned, so the
+// call's closing line can be handed to it when captions end.
+func (b *Bot) captionOutputs(client *bot.Client, serverID, threadID snowflake.ID) (speech.Output, *captions.ThreadPoster) {
 	names := captions.MemberNames(client.Caches, serverID)
-	return speech.MultiOutput{
-		captions.TerminalOutput{NameFor: names},
-		captions.NewThreadPoster(client.Rest, threadID, names, &b.posters),
-	}
+	poster := captions.NewThreadPoster(client.Rest, threadID, names, &b.posters)
+	return speech.MultiOutput{captions.TerminalOutput{NameFor: names}, poster}, poster
 }

@@ -49,11 +49,12 @@ type captionsCall struct {
 //     whoever started the captions added to it
 //   - the voice channel's status, seen by anyone in or joining the call
 //
-// If the notice or the thread fails, nothing is left behind and the error is
-// returned: captions must not run without people being told. The rest only
-// make captions easier to find, so if they fail it's logged and captions go
-// ahead.
-func announceCaptions(client *bot.Client, call captionsCall) (*discord.GuildThread, error) {
+// It returns the thread and the notice's ID (so the notice can be marked ended
+// later). If the notice or the thread fails, nothing is left behind and the
+// error is returned: captions must not run without people being told. The rest
+// only make captions easier to find, so if they fail it's logged and captions
+// go ahead.
+func announceCaptions(client *bot.Client, call captionsCall) (*discord.GuildThread, snowflake.ID, error) {
 	// The notice goes first so people are told before anything else happens.
 	// The thread doesn't exist yet, so it points at the captions channel for
 	// now.
@@ -62,13 +63,13 @@ func announceCaptions(client *bot.Client, call captionsCall) (*discord.GuildThre
 		AllowedMentions: captions.NoPings,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("posting the notice in the call's chat: %w", err)
+		return nil, 0, fmt.Errorf("posting the notice in the call's chat: %w", err)
 	}
 
 	thread, err := startCaptionsThread(client, call)
 	if err != nil {
 		deleteOwnMessage(client, call.voiceChannelID, notice.ID)
-		return nil, err
+		return nil, 0, err
 	}
 
 	// Now point the notice straight at the thread. The captions channel holds
@@ -93,7 +94,23 @@ func announceCaptions(client *bot.Client, call captionsCall) (*discord.GuildThre
 		log.Printf("couldn't set the voice channel status: %v", err)
 	}
 
-	return thread, nil
+	return thread, notice.ID, nil
+}
+
+// markNoticeEnded edits the call's notice to say captions have ended, so
+// nobody reading the call's chat later thinks they're still being captioned.
+// Best effort: it's logged if it fails.
+func markNoticeEnded(client *bot.Client, voiceChannelID, noticeID, threadID snowflake.ID) {
+	ended := endedNotice(threadID)
+	_, err := client.Rest.UpdateMessage(voiceChannelID, noticeID, discord.MessageUpdate{Content: &ended, AllowedMentions: captions.NoPings})
+	if err != nil {
+		log.Printf("couldn't mark the call notice as ended: %v", err)
+	}
+}
+
+// endedNotice replaces the call notice once captions stop.
+func endedNotice(threadID snowflake.ID) string {
+	return fmt.Sprintf("⏹️ **Captions for this call have ended.** They're in %s.", discord.ChannelMention(threadID))
 }
 
 // clearVoiceStatus takes the "live captions" status off a voice channel when

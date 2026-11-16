@@ -21,7 +21,7 @@ func TestBotDisconnectedEndsTheSession(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.startedSession(callerID)
 
-	env.bot.OnBotLeftVoice(&events.GuildVoiceLeave{GenericGuildVoiceState: env.voiceEvent(botID)})
+	env.bot.OnVoiceLeave(&events.GuildVoiceLeave{GenericGuildVoiceState: env.voiceEvent(botID)})
 
 	env.noSession(t)
 	if !conn.closed {
@@ -37,7 +37,7 @@ func TestBotDisconnectedWithNoConnectionLeftStillEndsTheSession(t *testing.T) {
 	env := newTestEnv(t)
 	env.bot.sessions.Start(serverID, sessions.Session{StartedBy: callerID})
 
-	env.bot.OnBotLeftVoice(&events.GuildVoiceLeave{GenericGuildVoiceState: env.voiceEvent(botID)})
+	env.bot.OnVoiceLeave(&events.GuildVoiceLeave{GenericGuildVoiceState: env.voiceEvent(botID)})
 
 	env.noSession(t)
 }
@@ -46,7 +46,7 @@ func TestBotMovedEndsTheSession(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.startedSession(callerID)
 
-	env.bot.OnBotMovedVoice(&events.GuildVoiceMove{GenericGuildVoiceState: env.voiceEvent(botID)})
+	env.bot.OnVoiceMove(&events.GuildVoiceMove{GenericGuildVoiceState: env.voiceEvent(botID)})
 
 	env.noSession(t)
 	if !conn.closed {
@@ -59,8 +59,8 @@ func TestOtherPeopleLeavingOrMovingIsIgnored(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.startedSession(callerID)
 
-	env.bot.OnBotLeftVoice(&events.GuildVoiceLeave{GenericGuildVoiceState: env.voiceEvent(otherMemberID)})
-	env.bot.OnBotMovedVoice(&events.GuildVoiceMove{GenericGuildVoiceState: env.voiceEvent(otherMemberID)})
+	env.bot.OnVoiceLeave(&events.GuildVoiceLeave{GenericGuildVoiceState: env.voiceEvent(otherMemberID)})
+	env.bot.OnVoiceMove(&events.GuildVoiceMove{GenericGuildVoiceState: env.voiceEvent(otherMemberID)})
 
 	if _, running := env.bot.sessions.Get(serverID); !running {
 		t.Error("someone else leaving must not end the session")
@@ -75,7 +75,7 @@ func TestBotLeavingWithNoSessionDoesNothing(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.voice.connectBot(serverID, meetingChannelID)
 
-	env.bot.OnBotLeftVoice(&events.GuildVoiceLeave{GenericGuildVoiceState: env.voiceEvent(botID)})
+	env.bot.OnVoiceLeave(&events.GuildVoiceLeave{GenericGuildVoiceState: env.voiceEvent(botID)})
 
 	if conn.closed {
 		t.Error("with no session the leave was ours; nothing to clean up")

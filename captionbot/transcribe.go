@@ -132,7 +132,7 @@ func (b *Bot) onTranscribeStart(e *handler.CommandEvent) error {
 	// Joined, so now tell everyone, before listening to anything: a notice in
 	// the call's chat, the captions thread and the call's status. Doing this
 	// after joining means a failed join never leaves announcements behind.
-	thread, err := announceCaptions(e.Client(), captionsCall{
+	thread, noticeID, err := announceCaptions(e.Client(), captionsCall{
 		title:             title,
 		voiceChannelID:    *voiceState.ChannelID,
 		captionsChannelID: captionsChannelID,
@@ -165,11 +165,19 @@ func (b *Bot) onTranscribeStart(e *handler.CommandEvent) error {
 	// Start listening: live captions for each speaker, posted and growing in the
 	// thread, with finished ones also logged to the terminal. Anyone with the
 	// no-captions role is skipped.
-	voiceConnection.SetOpusFrameReceiver(speech.NewTranscriber(b.recogniser,
-		b.captionOutputs(e.Client(), *guildID, thread.ID()),
+	output, poster := b.captionOutputs(e.Client(), *guildID, thread.ID())
+	voiceConnection.SetOpusFrameReceiver(speech.NewTranscriber(b.recogniser, output,
 		b.optedOutOfCaptions(e.Client().Caches, *guildID)))
 
-	// joined, so keep the claim: the session now runs until /transcribe stop
+	// Remember what's needed to end the call tidily later (endSession).
+	b.addCall(*guildID, &liveCall{
+		poster:         poster,
+		voiceChannelID: *voiceState.ChannelID,
+		threadID:       thread.ID(),
+		noticeID:       noticeID,
+	})
+
+	// joined, so keep the claim: the session runs until it's ended
 	joined = true
 	return nil
 }
@@ -199,21 +207,6 @@ func (b *Bot) onTranscribeStop(e *handler.CommandEvent) error {
 		return err
 	}
 
-	// Take the "live captions" status off the call while the bot is still in
-	// it (setting a call's status needs the bot to be connected to it).
-	clearVoiceStatus(e.Client(), current.ChannelID)
-
-	// Leave the voice channel. GetConn is nil if the bot was already removed from
-	// voice (e.g. someone disconnected it), in which case there's nothing to close.
-	voiceConnection := e.Client().VoiceManager.GetConn(*guildID)
-	if voiceConnection != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		voiceConnection.Close(ctx)
-	}
-
-	// Forget the session last, so a /transcribe start can't slip in while the bot
-	// is still leaving.
-	b.sessions.Remove(*guildID)
+	b.endSession(e.Client(), *guildID, stoppedByLine(e.Member().EffectiveName()))
 	return nil
 }

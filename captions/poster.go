@@ -59,6 +59,12 @@ type ThreadPoster struct {
 	queue []*liveCaption                // oldest first: the order people started talking
 	open  map[snowflake.ID]*liveCaption // each speaker's unfinished sentence
 
+	// signOff is posted after the last caption once the call has ended, e.g.
+	// "Captions stopped by Sam." stopped is true once the worker has taken it,
+	// so a SignOff that arrives later posts its line straight away.
+	signOff string
+	stopped bool
+
 	wake      chan struct{} // nudges the worker when there's new text
 	done      chan struct{} // closed when the transcriber has finished
 	closeOnce sync.Once
@@ -119,6 +125,33 @@ func (p *ThreadPoster) Closed() {
 	p.closeOnce.Do(func() { close(p.done) })
 }
 
+// SignOff sets a closing line to post in the thread once the call has ended,
+// after every remaining caption, so readers see why the captions stopped and
+// that nothing came after. If the poster has already finished, the line is
+// posted straight away.
+func (p *ThreadPoster) SignOff(line string) {
+	p.mu.Lock()
+	if !p.stopped {
+		p.signOff = line
+		p.mu.Unlock()
+		return
+	}
+	p.mu.Unlock()
+	p.postClosingLine(line)
+}
+
+// postClosingLine posts a closing line, if there is one. If it fails it's
+// logged: the captions themselves are already in the thread.
+func (p *ThreadPoster) postClosingLine(line string) {
+	if line == "" {
+		return
+	}
+	_, err := p.rest.CreateMessage(p.threadID, discord.MessageCreate{Content: line, AllowedMentions: NoPings})
+	if err != nil {
+		log.Printf("couldn't post the closing line in the captions thread: %v", err)
+	}
+}
+
 // Done is closed once the poster has sent everything and stopped, after
 // Closed.
 func (p *ThreadPoster) Done() <-chan struct{} {
@@ -154,8 +187,14 @@ func (p *ThreadPoster) run(running *sync.WaitGroup) {
 		case <-ticker.C:
 		case <-p.done:
 			// Captions are over: send everything left, without waiting for
-			// the edit pacing, then stop.
+			// the edit pacing, then the closing line (if one's been set), then
+			// stop.
 			p.sendDue(true)
+			p.mu.Lock()
+			line := p.signOff
+			p.stopped = true
+			p.mu.Unlock()
+			p.postClosingLine(line)
 			return
 		}
 	}

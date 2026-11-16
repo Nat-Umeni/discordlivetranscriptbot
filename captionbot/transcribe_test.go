@@ -136,7 +136,7 @@ func TestStartJoinsTheCallersChannel(t *testing.T) {
 	tr.Close() // the call ends: its poster sends what's left and stops
 
 	logs := captureLog(t)
-	out := env.bot.captionOutputs(env.client, serverID, threadID)
+	out, _ := env.bot.captionOutputs(env.client, serverID, threadID)
 	out.Caption(callerID, "hello everyone", true)
 	out.Closed()
 	if !captions.WaitForPosters(&env.bot.posters, 5*time.Second) {
