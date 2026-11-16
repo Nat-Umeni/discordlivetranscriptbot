@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"slices"
 	"sync"
 
 	"github.com/disgoorg/snowflake/v2"
@@ -23,6 +24,10 @@ type serverSettings struct {
 	// The text channel where each call's captions thread is created, also
 	// picked with /captions-setup.
 	CaptionsChannelID snowflake.ID `json:"captionsChannelID,omitempty"`
+
+	// Captions channels picked before the current one. Their threads are still
+	// captions threads, so their transcripts can still be rebuilt.
+	PastCaptionsChannelIDs []snowflake.ID `json:"pastCaptionsChannelIDs,omitempty"`
 
 	// Members with this role are never captioned: the way to opt out. Also
 	// picked with /captions-setup.
@@ -111,16 +116,35 @@ func (s *Store) CaptionsChannel(serverID snowflake.ID) (snowflake.ID, bool) {
 }
 
 // SetCaptionsChannel remembers where a server's captions threads go and saves
-// every server's settings to the file.
+// every server's settings to the file. A channel it replaces goes on the list
+// of past captions channels, so its threads still count as captions threads.
 func (s *Store) SetCaptionsChannel(serverID, channelID snowflake.ID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	entry := s.servers[serverID]
+	old := entry.CaptionsChannelID
+	if old != 0 && old != channelID && !slices.Contains(entry.PastCaptionsChannelIDs, old) {
+		entry.PastCaptionsChannelIDs = append(entry.PastCaptionsChannelIDs, old)
+	}
+	// Picking an old channel again makes it the current one, not both.
+	entry.PastCaptionsChannelIDs = slices.DeleteFunc(entry.PastCaptionsChannelIDs, func(id snowflake.ID) bool {
+		return id == channelID
+	})
 	entry.CaptionsChannelID = channelID
 	s.servers[serverID] = entry
 
 	return s.save()
+}
+
+// IsCaptionsChannel says whether a channel is, or ever was, a server's
+// captions channel: where its captions threads are.
+func (s *Store) IsCaptionsChannel(serverID, channelID snowflake.ID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry := s.servers[serverID]
+	return channelID != 0 && (channelID == entry.CaptionsChannelID || slices.Contains(entry.PastCaptionsChannelIDs, channelID))
 }
 
 // NoCaptionsRole returns the role whose members are never captioned, and false

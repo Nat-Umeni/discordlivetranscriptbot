@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -255,5 +256,57 @@ func TestSaveWhenEncodingFails(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err == nil {
 		t.Error("nothing should be written when encoding fails")
+	}
+}
+
+func TestChangingTheCaptionsChannelRemembersTheOldOne(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	store, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const server, a, b, c snowflake.ID = 1, 10, 20, 30
+
+	for _, step := range []struct {
+		channel  snowflake.ID
+		wantPast []snowflake.ID
+	}{
+		{a, nil},                  // the first channel: nothing before it
+		{a, nil},                  // the same again: nothing changes
+		{b, []snowflake.ID{a}},    // A → B: A is remembered
+		{c, []snowflake.ID{a, b}}, // B → C
+		{a, []snowflake.ID{b, c}}, // back to A: A is current again, not also past
+		{b, []snowflake.ID{c, a}}, // no duplicates
+	} {
+		if err := store.SetCaptionsChannel(server, step.channel); err != nil {
+			t.Fatal(err)
+		}
+		got := store.servers[server].PastCaptionsChannelIDs
+		if len(got) != len(step.wantPast) || (len(got) > 0 && !slices.Equal(got, step.wantPast)) {
+			t.Errorf("after setting %d: past channels %v, want %v", step.channel, got, step.wantPast)
+		}
+	}
+
+	// It's kept in settings.json.
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		channel snowflake.ID
+		want    bool
+	}{
+		{b, true},   // current
+		{c, true},   // past
+		{a, true},   // past
+		{99, false}, // never a captions channel
+		{0, false},
+	} {
+		if got := reloaded.IsCaptionsChannel(server, test.channel); got != test.want {
+			t.Errorf("IsCaptionsChannel(%d) = %v, want %v", test.channel, got, test.want)
+		}
+	}
+	if reloaded.IsCaptionsChannel(2, b) {
+		t.Error("another server's channels don't count")
 	}
 }

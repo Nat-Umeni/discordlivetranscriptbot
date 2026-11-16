@@ -123,7 +123,8 @@ func (b *Bot) onTranscribeExport(e *handler.CommandEvent) error {
 	}
 
 	// It has to be one of this bot's captions threads: a thread the bot
-	// started in the captions channel. The thread is looked up from Discord
+	// started in a captions channel (the current one, or one picked before).
+	// The thread is looked up from Discord
 	// rather than read from the command, because the channel details sent
 	// with a command may not say who started it.
 	notACaptionsThread := "Run /transcribe export inside a captions thread, and I'll rebuild that thread's transcript."
@@ -135,9 +136,9 @@ func (b *Bot) onTranscribeExport(e *handler.CommandEvent) error {
 		log.Printf("couldn't look up channel %s for /transcribe export: %v", e.Channel().ID(), err)
 		return answer("I couldn't look this thread up, try again in a moment.")
 	}
-	captionsChannelID, _ := b.settings.CaptionsChannel(*guildID)
 	thread, isThread := channel.(discord.GuildThread)
-	if !isThread || thread.OwnerID != e.Client().ID() || thread.ParentID() == nil || *thread.ParentID() != captionsChannelID {
+	if !isThread || thread.OwnerID != e.Client().ID() || thread.ParentID() == nil ||
+		!b.settings.IsCaptionsChannel(*guildID, *thread.ParentID()) {
 		return answer(notACaptionsThread)
 	}
 

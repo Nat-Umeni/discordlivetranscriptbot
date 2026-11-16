@@ -304,3 +304,21 @@ func TestExportWhenThinkingFails(t *testing.T) {
 		t.Error("nothing should be posted")
 	}
 }
+
+// An admin picked a new captions channel: threads in the old one are still
+// captions threads, so their transcripts can still be rebuilt.
+func TestExportWorksInAnOldCaptionsChannel(t *testing.T) {
+	env := newTestEnv(t)
+	if err := env.bot.settings.SetCaptionsChannel(serverID, lockedCaptionsChannelID); err != nil {
+		t.Fatal(err)
+	}
+	lookUpAs(t, env, threadJSON(botID, captionsChannelID)) // a thread in the old channel
+	event, _ := env.command(t, inChannel(moderator, sentWithCommand), exportCommand())
+
+	if err := env.bot.onTranscribeExport(event); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.rest.responses) != 1 || env.rest.responses[0] != "Posted the updated transcript in this thread." {
+		t.Errorf("got %q", env.rest.responses)
+	}
+}
