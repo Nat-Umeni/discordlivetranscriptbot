@@ -186,7 +186,10 @@ type fakeRest struct {
 
 	comments   []discord.Message // other people's messages in channels, for GetMessages
 	historyErr error             // reading a channel's messages back fails
-	responses  []string          // edits to a deferred interaction response (the hidden "thinking…" reply)
+
+	channels   map[snowflake.ID]discord.Channel // what GetChannel finds
+	channelErr error
+	responses  []string // edits to a deferred interaction response (the hidden "thinking…" reply)
 }
 
 type postedMessage struct {
@@ -339,6 +342,19 @@ func (r *fakeRest) GetMessages(channelID, _, _, after snowflake.ID, limit int, _
 	}
 	slices.Reverse(page)
 	return page, nil
+}
+
+func (r *fakeRest) GetChannel(channelID snowflake.ID, _ ...rest.RequestOpt) (discord.Channel, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.channelErr != nil {
+		return nil, r.channelErr
+	}
+	channel, found := r.channels[channelID]
+	if !found {
+		return nil, errors.New("unknown channel")
+	}
+	return channel, nil
 }
 
 func (r *fakeRest) AddThreadMember(threadID, userID snowflake.ID, _ ...rest.RequestOpt) error {

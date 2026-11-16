@@ -1,6 +1,7 @@
 package captionbot
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -165,10 +166,27 @@ func exportCommand() string {
 	return `{"id":"1","name":"transcribe","type":1,"options":[{"name":"export","type":1}]}`
 }
 
-// captionsThreadJSON is the thread a command was run in, as Discord sends it.
-func captionsThreadJSON(ownerID, parentID snowflake.ID) string {
+// threadJSON is a captions thread as Discord describes it in full (when
+// looked up).
+func threadJSON(ownerID, parentID snowflake.ID) string {
 	return fmt.Sprintf(`{"id":"%d","type":11,"guild_id":"%d","parent_id":"%d","owner_id":"%d","name":"📝 Weekly Meetup - 15 Nov 2026"}`,
 		threadID, serverID, parentID, ownerID)
+}
+
+// sentWithCommand is the thread as a command run inside it describes it: no
+// owner, so the bot has to look the thread up to know who started it.
+var sentWithCommand = fmt.Sprintf(`{"id":"%d","type":11,"guild_id":"%d","parent_id":"%d","name":"📝 Weekly Meetup - 15 Nov 2026"}`,
+	threadID, serverID, captionsChannelID)
+
+// lookUpAs makes the fake Discord describe the thread like this when the bot
+// looks it up.
+func lookUpAs(t *testing.T, env *testEnv, channelJSON string) {
+	t.Helper()
+	var channel discord.UnmarshalChannel
+	if err := json.Unmarshal([]byte(channelJSON), &channel); err != nil {
+		t.Fatal(err)
+	}
+	env.rest.channels = map[snowflake.ID]discord.Channel{threadID: channel.Channel}
 }
 
 func inChannel(who caller, channelJSON string) caller {
@@ -178,11 +196,10 @@ func inChannel(who caller, channelJSON string) caller {
 
 func TestExportRebuildsTheTranscript(t *testing.T) {
 	env := newTestEnv(t)
-	env.rest.mu.Lock()
+	lookUpAs(t, env, threadJSON(botID, captionsChannelID))
 	env.rest.posted = append(env.rest.posted,
 		postedMessage{channelID: threadID, messageID: 9001, message: discord.MessageCreate{Content: "**Sam:** fixed text"}})
-	env.rest.mu.Unlock()
-	event, sent := env.command(t, inChannel(moderator, captionsThreadJSON(botID, captionsChannelID)), exportCommand())
+	event, sent := env.command(t, inChannel(moderator, sentWithCommand), exportCommand())
 
 	if err := env.bot.onTranscribeExport(event); err != nil {
 		t.Fatal(err)
@@ -200,18 +217,15 @@ func TestExportRebuildsTheTranscript(t *testing.T) {
 	}
 }
 
-func TestExportRefusals(t *testing.T) {
-	textChannel := fmt.Sprintf(`{"id":"%d","type":0,"guild_id":"%d","name":"captions"}`, captionsChannelID, serverID)
+// Turned away before anything else: the hidden reply says why.
+func TestExportRefusedStraightAway(t *testing.T) {
 	for _, test := range []struct {
 		why  string
 		who  caller
 		want string
 	}{
 		{"in a DM", caller{id: callerID, inDM: true}, "I only work inside a server"},
-		{"not a note-taker or moderator", inChannel(plainMember, captionsThreadJSON(botID, captionsChannelID)), "Only note-takers and moderators can rebuild transcripts."},
-		{"not in a thread", inChannel(moderator, textChannel), "Run /transcribe export inside a captions thread"},
-		{"a thread the bot didn't start", inChannel(moderator, captionsThreadJSON(otherMemberID, captionsChannelID)), "Run /transcribe export inside a captions thread"},
-		{"a thread somewhere else", inChannel(moderator, captionsThreadJSON(botID, meetingChannelID)), "Run /transcribe export inside a captions thread"},
+		{"not a note-taker or moderator", inChannel(plainMember, sentWithCommand), "Only note-takers and moderators can rebuild transcripts."},
 	} {
 		t.Run(test.why, func(t *testing.T) {
 			env := newTestEnv(t)
@@ -220,6 +234,42 @@ func TestExportRefusals(t *testing.T) {
 				t.Fatal(err)
 			}
 			onlyReply(t, sent, test.want)
+		})
+	}
+}
+
+// Turned away once the thread's been looked up: the "thinking…" reply is
+// updated to say why, and nothing is posted.
+func TestExportOutsideACaptionsThread(t *testing.T) {
+	textChannel := fmt.Sprintf(`{"id":"%d","type":0,"guild_id":"%d","name":"captions"}`, threadID, serverID)
+	notThere := "Run /transcribe export inside a captions thread, and I'll rebuild that thread's transcript."
+	for _, test := range []struct {
+		why       string
+		sentWith  string // the channel as the command describes it ("" = none)
+		lookedUp  string // the channel as looking it up describes it
+		lookupErr error
+		want      string
+	}{
+		{"no channel sent with the command", "", "", nil, notThere},
+		{"not a thread", textChannel, textChannel, nil, notThere},
+		{"a thread the bot didn't start", sentWithCommand, threadJSON(otherMemberID, captionsChannelID), nil, notThere},
+		{"a thread somewhere else", sentWithCommand, threadJSON(botID, meetingChannelID), nil, notThere},
+		{"looking it up fails", sentWithCommand, "", errorString("discord unreachable"), "I couldn't look this thread up, try again in a moment."},
+	} {
+		t.Run(test.why, func(t *testing.T) {
+			env := newTestEnv(t)
+			if test.lookedUp != "" {
+				lookUpAs(t, env, test.lookedUp)
+			}
+			env.rest.channelErr = test.lookupErr
+			event, _ := env.command(t, inChannel(moderator, test.sentWith), exportCommand())
+
+			if err := env.bot.onTranscribeExport(event); err != nil {
+				t.Fatal(err)
+			}
+			if len(env.rest.responses) != 1 || env.rest.responses[0] != test.want {
+				t.Errorf("want %q, got %q", test.want, env.rest.responses)
+			}
 			if len(env.rest.posted) != 0 {
 				t.Errorf("nothing should be posted, got %+v", env.rest.posted)
 			}
@@ -230,8 +280,9 @@ func TestExportRefusals(t *testing.T) {
 func TestExportWhenRebuildingFails(t *testing.T) {
 	captureLog(t)
 	env := newTestEnv(t)
+	lookUpAs(t, env, threadJSON(botID, captionsChannelID))
 	env.rest.historyErr = errorString("no access")
-	event, _ := env.command(t, inChannel(moderator, captionsThreadJSON(botID, captionsChannelID)), exportCommand())
+	event, _ := env.command(t, inChannel(moderator, sentWithCommand), exportCommand())
 
 	if err := env.bot.onTranscribeExport(event); err != nil {
 		t.Fatal(err)
@@ -243,7 +294,7 @@ func TestExportWhenRebuildingFails(t *testing.T) {
 
 func TestExportWhenThinkingFails(t *testing.T) {
 	env := newTestEnv(t)
-	event, sent := env.command(t, inChannel(moderator, captionsThreadJSON(botID, captionsChannelID)), exportCommand())
+	event, sent := env.command(t, inChannel(moderator, sentWithCommand), exportCommand())
 	sent.err = errorString("discord unreachable")
 
 	if err := env.bot.onTranscribeExport(event); err == nil {

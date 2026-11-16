@@ -111,26 +111,40 @@ func (b *Bot) onTranscribeExport(e *handler.CommandEvent) error {
 		return createHiddenMessageForCommandCaller(e, "Only note-takers and moderators can rebuild transcripts.")
 	}
 
-	// It has to be one of this bot's captions threads: a thread the bot
-	// started in the captions channel.
-	captionsChannelID, _ := b.settings.CaptionsChannel(*guildID)
-	thread, isThread := e.Channel().MessageChannel.(discord.GuildThread)
-	if !isThread || thread.OwnerID != e.Client().ID() || thread.ParentID() == nil || *thread.ParentID() != captionsChannelID {
-		return createHiddenMessageForCommandCaller(e, "Run /transcribe export inside a captions thread, and I'll rebuild that thread's transcript.")
-	}
-
-	// Reading a long thread back can take longer than the 3 seconds Discord
+	// Answer straight away with a hidden "thinking…": looking the thread up and
+	// reading a long thread back can take longer than the 3 seconds Discord
 	// allows for a first answer.
 	if err := e.DeferCreateMessage(true); err != nil {
 		return err
 	}
+	answer := func(text string) error {
+		_, err := e.UpdateInteractionResponse(discord.MessageUpdate{Content: &text})
+		return err
+	}
+
+	// It has to be one of this bot's captions threads: a thread the bot
+	// started in the captions channel. The thread is looked up from Discord
+	// rather than read from the command, because the channel details sent
+	// with a command may not say who started it.
+	notACaptionsThread := "Run /transcribe export inside a captions thread, and I'll rebuild that thread's transcript."
+	if e.Channel().MessageChannel == nil {
+		return answer(notACaptionsThread)
+	}
+	channel, err := e.Client().Rest.GetChannel(e.Channel().ID())
+	if err != nil {
+		log.Printf("couldn't look up channel %s for /transcribe export: %v", e.Channel().ID(), err)
+		return answer("I couldn't look this thread up, try again in a moment.")
+	}
+	captionsChannelID, _ := b.settings.CaptionsChannel(*guildID)
+	thread, isThread := channel.(discord.GuildThread)
+	if !isThread || thread.OwnerID != e.Client().ID() || thread.ParentID() == nil || *thread.ParentID() != captionsChannelID {
+		return answer(notACaptionsThread)
+	}
 
 	heading := fmt.Sprintf("📄 Updated transcript (rebuilt by %s)", captions.EscapeMarkdown(e.Member().EffectiveName()))
-	answer := "Posted the updated transcript in this thread."
 	if err := b.postTranscript(e.Client(), thread.ID(), thread.Name(), heading); err != nil {
 		log.Printf("couldn't rebuild the transcript in thread %s: %v", thread.ID(), err)
-		answer = "I couldn't rebuild the transcript, try again in a moment."
+		return answer("I couldn't rebuild the transcript, try again in a moment.")
 	}
-	_, err := e.UpdateInteractionResponse(discord.MessageUpdate{Content: &answer})
-	return err
+	return answer("Posted the updated transcript in this thread.")
 }
