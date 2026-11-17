@@ -78,8 +78,9 @@ func encodeOpus(t *testing.T, samples []float32) [][]byte {
 	return packets
 }
 
+// sampleWAV is one of the model's sample recordings, kept in testdata.
 func sampleWAV(name string) string {
-	return filepath.Join(testModelDir, "test_wavs", name)
+	return filepath.Join("testdata", name)
 }
 
 // caption is one call to Output.Caption.

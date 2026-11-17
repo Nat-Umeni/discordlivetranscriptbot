@@ -71,7 +71,7 @@ func TestRecogniserTranscribesTheSampleRecordings(t *testing.T) {
 	}
 	defer sherpa.DeleteOnlineRecognizer(recogniser)
 
-	// Expected words from the model's own test_wavs/trans.txt. Checking key
+	// Expected words from testdata/trans.txt. Checking key
 	// words rather than the exact sentence leaves room for the odd small slip.
 	tests := []struct {
 		file string
@@ -85,7 +85,7 @@ func TestRecogniserTranscribesTheSampleRecordings(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.file, func(t *testing.T) {
-			text := transcribe(t, recogniser, filepath.Join(testModelDir, "test_wavs", test.file))
+			text := transcribe(t, recogniser, sampleWAV(test.file))
 			t.Logf("heard: %s", text)
 
 			for _, word := range test.want {

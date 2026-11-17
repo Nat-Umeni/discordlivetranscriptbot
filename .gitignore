@@ -4,6 +4,7 @@ example_*.go
 settings.json
 recordings/
 *.wav
+!/speech/testdata/*.wav
 models/
 /livetranscribebot
 dist/
