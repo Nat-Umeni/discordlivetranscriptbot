@@ -26,11 +26,11 @@ type zipEntry struct {
 	name     string
 	contents string
 	mode     fs.FileMode
-	outside  bool // not inside the zip's hopamine-captions/ folder
+	outside  bool // not inside the zip's discord-live-captions/ folder
 }
 
 // makeZip builds a zip the way the build scripts do (everything inside a
-// hopamine-captions/ folder), uncompressed so tests can find and change a
+// discord-live-captions/ folder), uncompressed so tests can find and change a
 // file's bytes inside it.
 func makeZip(t *testing.T, entries ...zipEntry) []byte {
 	t.Helper()
@@ -131,17 +131,17 @@ func installedApp(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	for name, contents := range map[string]string{
-		"hopamine-captions":  "old program",
-		"libdave.so":         "old library",
-		"settings.json":      "the host's settings",
-		".env":               "BOT_TOKEN=secret",
-		"models/model.onnx":  "the model",
-		"HOW-TO-RUN.txt":     "old instructions",
-		"docs/old-notes.txt": "kept",
+		"discord-live-captions": "old program",
+		"libdave.so":            "old library",
+		"settings.json":         "the host's settings",
+		".env":                  "BOT_TOKEN=secret",
+		"models/model.onnx":     "the model",
+		"HOW-TO-RUN.txt":        "old instructions",
+		"docs/old-notes.txt":    "kept",
 	} {
 		write(t, filepath.Join(dir, name), contents, 0o644)
 	}
-	if err := os.Chmod(filepath.Join(dir, "hopamine-captions"), 0o755); err != nil {
+	if err := os.Chmod(filepath.Join(dir, "discord-live-captions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -211,8 +211,8 @@ func TestAssetName(t *testing.T) {
 	for _, test := range []struct {
 		goos, arch, want string
 	}{
-		{"windows", "amd64", "hopamine-captions-windows-x64.zip"},
-		{"linux", "amd64", "hopamine-captions-linux-x64.zip"},
+		{"windows", "amd64", "discord-live-captions-windows-x64.zip"},
+		{"linux", "amd64", "discord-live-captions-linux-x64.zip"},
 		{"darwin", "arm64", ""},
 		{"linux", "arm64", ""},
 		{"windows", "386", ""},
@@ -351,23 +351,23 @@ func TestLatestVersionWhenGitHubCantBeReached(t *testing.T) {
 
 func TestChecksumFor(t *testing.T) {
 	sums := []byte(
-		"aaaa  hopamine-captions-linux-x64.zip.sig\n" +
-			"BBBB *hopamine-captions-windows-x64.zip\r\n" +
-			"cccc  hopamine-captions-linux-x64.zip\n" +
+		"aaaa  discord-live-captions-linux-x64.zip.sig\n" +
+			"BBBB *discord-live-captions-windows-x64.zip\r\n" +
+			"cccc  discord-live-captions-linux-x64.zip\n" +
 			"\n" +
 			"not a checksum line at all\n")
 
 	for _, test := range []struct {
 		name, asset, want string
 	}{
-		{"text mode, two spaces", "hopamine-captions-linux-x64.zip.sig", "aaaa"},
+		{"text mode, two spaces", "discord-live-captions-linux-x64.zip.sig", "aaaa"},
 		// sha256sum -b writes " *" before the name. Lowercased because that's
 		// how Apply writes its own hash.
-		{"binary mode and CRLF", "hopamine-captions-windows-x64.zip", "bbbb"},
+		{"binary mode and CRLF", "discord-live-captions-windows-x64.zip", "bbbb"},
 		// The zip's name is the start of the line above's: matching on a
 		// prefix would return the wrong hash.
-		{"exact name, not prefix", "hopamine-captions-linux-x64.zip", "cccc"},
-		{"missing", "hopamine-captions-macos.zip", ""},
+		{"exact name, not prefix", "discord-live-captions-linux-x64.zip", "cccc"},
+		{"missing", "discord-live-captions-macos.zip", ""},
 	} {
 		got, err := checksumFor(sums, test.asset)
 		if test.want == "" {
@@ -388,11 +388,11 @@ func TestApplySwapsTheFilesIn(t *testing.T) {
 	dir := installedApp(t)
 	releaseOf(t, "v9.9.9", makeZip(t,
 		// The zip says 0644, but the program keeps its 0755 so it still runs.
-		zipEntry{name: "hopamine-captions", contents: "new program", mode: 0o644},
+		zipEntry{name: "discord-live-captions", contents: "new program", mode: 0o644},
 		zipEntry{name: "libdave.so", contents: "new library"},
 		zipEntry{name: "libnew.so", contents: "a library this version added", mode: 0o640},
 		zipEntry{name: "HOW-TO-RUN.txt", contents: "new instructions"},
-		zipEntry{name: "hopamine-captions/", mode: fs.ModeDir | 0o755, outside: true}, // as zip -r makes it
+		zipEntry{name: "discord-live-captions/", mode: fs.ModeDir | 0o755, outside: true}, // as zip -r makes it
 		zipEntry{name: "docs/", mode: fs.ModeDir | 0o755},
 		zipEntry{name: "docs/new-notes.txt", contents: "added"},
 	))
@@ -402,11 +402,11 @@ func TestApplySwapsTheFilesIn(t *testing.T) {
 	}
 
 	want := map[string]string{
-		"hopamine-captions":  "new program",
-		"libdave.so":         "new library",
-		"libnew.so":          "a library this version added",
-		"HOW-TO-RUN.txt":     "new instructions",
-		"docs/new-notes.txt": "added",
+		"discord-live-captions": "new program",
+		"libdave.so":            "new library",
+		"libnew.so":             "a library this version added",
+		"HOW-TO-RUN.txt":        "new instructions",
+		"docs/new-notes.txt":    "added",
 		// Never in an update zip, and never touched.
 		"settings.json":      "the host's settings",
 		".env":               "BOT_TOKEN=secret",
@@ -419,7 +419,7 @@ func TestApplySwapsTheFilesIn(t *testing.T) {
 	}
 
 	if runtime.GOOS != "windows" {
-		for name, perm := range map[string]fs.FileMode{"hopamine-captions": 0o755, "libnew.so": 0o640} {
+		for name, perm := range map[string]fs.FileMode{"discord-live-captions": 0o755, "libnew.so": 0o640} {
 			info, err := os.Stat(filepath.Join(dir, name))
 			if err != nil {
 				t.Fatal(err)
@@ -435,17 +435,17 @@ func TestApplySwapsTheFilesIn(t *testing.T) {
 // was: a program that won't start can't update itself out of it.
 func TestApplyRefusesABadUpdate(t *testing.T) {
 	asset := thisPlatformsAsset(t)
-	good := makeZip(t, zipEntry{name: "hopamine-captions", contents: "new program"})
+	good := makeZip(t, zipEntry{name: "discord-live-captions", contents: "new program"})
 
-	symlink := makeZip(t, zipEntry{name: "hopamine-captions", contents: "/bin/sh", mode: fs.ModeSymlink | 0o777})
+	symlink := makeZip(t, zipEntry{name: "discord-live-captions", contents: "/bin/sh", mode: fs.ModeSymlink | 0o777})
 
 	// The zip's own check that a file wasn't damaged: change a byte of it.
-	damaged := makeZip(t, zipEntry{name: "hopamine-captions", contents: "new program"})
+	damaged := makeZip(t, zipEntry{name: "discord-live-captions", contents: "new program"})
 	damaged[bytes.Index(damaged, []byte("new program"))] = 'N'
 
 	// A compression method nobody knows, set in the zip's central directory
 	// (where a reader looks it up).
-	unknownMethod := makeZip(t, zipEntry{name: "hopamine-captions", contents: "new program"})
+	unknownMethod := makeZip(t, zipEntry{name: "discord-live-captions", contents: "new program"})
 	central := bytes.Index(unknownMethod, []byte("PK\x01\x02"))
 	unknownMethod[central+10] = 99
 
@@ -462,13 +462,13 @@ func TestApplyRefusesABadUpdate(t *testing.T) {
 		{"empty zip", withSums(asset, makeZip(t)), "no files"},
 		{"climbs out of the folder", withSums(asset, makeZip(t, zipEntry{name: "../outside", contents: "x"})), "outside the program's folder"},
 		{"not in the zip's folder", withSums(asset, makeZip(t,
-			zipEntry{name: "hopamine-captions", contents: "new program"},
+			zipEntry{name: "discord-live-captions", contents: "new program"},
 			zipEntry{name: "stray.txt", contents: "x", outside: true})), "outside the program's folder"},
 		{"absolute path", withSums(asset, makeZip(t, zipEntry{name: "/etc/outside", contents: "x"})), "outside the program's folder"},
 		{"Windows-style climb", withSums(asset, makeZip(t, zipEntry{name: `docs\..\..\outside`, contents: "x"})), "outside the program's folder"},
 		{"a link, not a file", withSums(asset, symlink), "isn't a plain file"},
-		{"damaged file", withSums(asset, damaged), "reading hopamine-captions"},
-		{"unknown compression", withSums(asset, unknownMethod), "reading hopamine-captions"},
+		{"damaged file", withSums(asset, damaged), "reading discord-live-captions"},
+		{"unknown compression", withSums(asset, unknownMethod), "reading discord-live-captions"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir := installedApp(t)
@@ -495,8 +495,8 @@ func TestApplyPutsEverythingBackWhenAFileFails(t *testing.T) {
 	write(t, filepath.Join(dir, "blocker"), "a file where a folder is needed", 0o644)
 	before := snapshot(t, dir)
 	releaseOf(t, "v9.9.9", makeZip(t,
-		zipEntry{name: "hopamine-captions", contents: "new program"}, // replaces a file
-		zipEntry{name: "libnew.so", contents: "new library"},         // adds one
+		zipEntry{name: "discord-live-captions", contents: "new program"}, // replaces a file
+		zipEntry{name: "libnew.so", contents: "new library"},             // adds one
 		zipEntry{name: "blocker/inside.txt", contents: "can't go here"},
 	))
 
@@ -641,7 +641,7 @@ func TestDownloadFailures(t *testing.T) {
 
 func TestUpdate(t *testing.T) {
 	asset := thisPlatformsAsset(t)
-	update := makeZip(t, zipEntry{name: "hopamine-captions", contents: "new program"})
+	update := makeZip(t, zipEntry{name: "discord-live-captions", contents: "new program"})
 
 	t.Run("a dev build never asks", func(t *testing.T) {
 		asked := fakeLatest(t, http.StatusOK, `{"tag_name":"v9.9.9"}`)
@@ -693,7 +693,7 @@ func TestUpdate(t *testing.T) {
 		if !updated || tag != "v9.9.9" {
 			t.Fatalf("got (%q, %v), want v9.9.9 installed", tag, updated)
 		}
-		if got := snapshot(t, dir)["hopamine-captions"]; got != "new program" {
+		if got := snapshot(t, dir)["discord-live-captions"]; got != "new program" {
 			t.Errorf("the program holds %q", got)
 		}
 		if !strings.Contains(logs.String(), "updating from v0.1.0 to v9.9.9") || !strings.Contains(logs.String(), "installed v9.9.9") {
@@ -708,7 +708,7 @@ func TestCleanupOldRemovesLeftovers(t *testing.T) {
 	dir := installedApp(t)
 	// What Windows leaves behind: the update moved the running files aside
 	// but couldn't delete them while they were in use.
-	write(t, filepath.Join(dir, "hopamine-captions.old"), "previous program", 0o755)
+	write(t, filepath.Join(dir, "discord-live-captions.old"), "previous program", 0o755)
 	write(t, filepath.Join(dir, "plugins", "libx.so.old"), "previous library", 0o644)
 	if runtime.GOOS != "windows" {
 		// A folder it can't look in doesn't stop it.
@@ -721,12 +721,12 @@ func TestCleanupOldRemovesLeftovers(t *testing.T) {
 
 	CleanupOld(dir)
 
-	for _, name := range []string{"hopamine-captions.old", "plugins/libx.so.old"} {
+	for _, name := range []string{"discord-live-captions.old", "plugins/libx.so.old"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("%s was left behind (%v)", name, err)
 		}
 	}
-	for _, name := range []string{"hopamine-captions", "libdave.so", "settings.json", ".env", "models/model.onnx"} {
+	for _, name := range []string{"discord-live-captions", "libdave.so", "settings.json", ".env", "models/model.onnx"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Errorf("CleanupOld touched %s: %v", name, err)
 		}

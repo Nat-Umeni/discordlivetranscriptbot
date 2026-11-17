@@ -47,7 +47,7 @@ const checksumsFileName = "checksums.txt"
 
 // zipFolder is the folder everything in a release zip is in, so unzipping it
 // makes one tidy folder. An update installs what's inside it.
-const zipFolder = "hopamine-captions/"
+const zipFolder = "discord-live-captions/"
 
 // maxDownloadBytes caps what a download may read. The zips are tens of MB
 // (the program and its libraries; the model is downloaded separately); the
@@ -69,9 +69,9 @@ var downloadClient = &http.Client{Timeout: 10 * time.Minute}
 func assetName(goos, goarch string) (string, error) {
 	switch goos + "/" + goarch {
 	case "windows/amd64":
-		return "hopamine-captions-windows-x64.zip", nil
+		return "discord-live-captions-windows-x64.zip", nil
 	case "linux/amd64":
-		return "hopamine-captions-linux-x64.zip", nil
+		return "discord-live-captions-linux-x64.zip", nil
 	}
 	return "", fmt.Errorf("no release is built for %s/%s", goos, goarch)
 }
@@ -140,7 +140,7 @@ func LatestVersion() (string, error) {
 	}
 
 	request.Header.Set("Accept", "application/vnd.github+json")
-	request.Header.Set("User-Agent", "hopamine-captions")
+	request.Header.Set("User-Agent", "discord-live-captions")
 
 	response, err := checkClient.Do(request)
 	if err != nil {

@@ -1,4 +1,4 @@
-# Hopamine Live Captions
+# Discord Live Captions
 
 A Discord bot that sits in a voice call and captions it live into a thread, so
 Deaf and hard-of-hearing members can follow meetings and events.
@@ -21,7 +21,7 @@ Deaf and hard-of-hearing members can follow meetings and events.
 
 Download the zip for your system from the public
 [releases repository](https://github.com/Nat-Umeni/discord-transcription-releases/releases/latest)
-(`hopamine-captions-windows-x64.zip` or `hopamine-captions-linux-x64.zip`),
+(`discord-live-captions-windows-x64.zip` or `discord-live-captions-linux-x64.zip`),
 unzip it and follow [`HOW-TO-RUN.txt`](build/HOW-TO-RUN.txt) inside: make
 the Discord bot, invite it, start the program and paste the bot token. The
 first start downloads the speech model (about 660 MB): it isn't in the zip,

@@ -41,7 +41,7 @@ const tokenHint = "If Discord says the token is wrong (401 Unauthorized, or 4004
 // the speech model, the Discord side (captionbot), and the connection to
 // Discord. It runs until Ctrl+C, then shuts down cleanly.
 func main() {
-	fmt.Printf("Hopamine Live Captions %s\n", version)
+	fmt.Printf("Discord Live Captions %s\n", version)
 
 	// Found before anything else: an update moves the running program aside,
 	// and restarting needs the path it was started from.

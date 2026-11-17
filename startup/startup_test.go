@@ -20,7 +20,7 @@ func TestAppDirIsNextToTheProgramInTheDownload(t *testing.T) {
 
 	// Double-clicked or started from a shortcut: the current folder is
 	// somewhere else.
-	got := AppDir(filepath.Join(unzipped, "hopamine-captions"), t.TempDir(), "HOW-TO-RUN.txt")
+	got := AppDir(filepath.Join(unzipped, "discord-live-captions"), t.TempDir(), "HOW-TO-RUN.txt")
 	if got != unzipped {
 		t.Errorf("got %q, want the program's folder %q", got, unzipped)
 	}

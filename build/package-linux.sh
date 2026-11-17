@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the Linux download, dist/hopamine-captions-linux-x64.zip: the
+# Builds the Linux download, dist/discord-live-captions-linux-x64.zip: the
 # program, the libraries it needs and the docs. Running bots update from it
 # too.
 #
@@ -42,4 +42,4 @@ for licence in /usr/share/licenses/opus/COPYING /usr/share/doc/libopus0/copyrigh
 done
 [ -f "$stage/licenses/opus.txt" ] || fail "opus's licence wasn't found"
 
-make_zip hopamine-captions-linux-x64.zip
+make_zip discord-live-captions-linux-x64.zip

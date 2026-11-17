@@ -1,7 +1,7 @@
 THIRD-PARTY NOTICES
 ===================
 
-Hopamine Live Captions is built from, and ships with, the following. Their
+Discord Live Captions is built from, and ships with, the following. Their
 licence texts are in the licenses folder next to this file.
 
 

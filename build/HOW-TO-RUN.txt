@@ -1,5 +1,5 @@
-HOPAMINE LIVE CAPTIONS: HOW TO RUN IT
-=====================================
+DISCORD LIVE CAPTIONS: HOW TO RUN IT
+====================================
 
 The bot joins a Discord voice call and captions it live into a thread, so
 Deaf and hard-of-hearing members can follow along. Speech is turned into text
@@ -40,9 +40,9 @@ your calls.
 WINDOWS
  1. Right-click the zip and choose "Extract All". It won't run from inside
     the zip.
- 2. In the extracted folder, open hopamine-captions and double-click
-    hopamine-captions.exe (Windows may show it as just hopamine-captions,
-    of type "Application").
+ 2. In the extracted folder, open discord-live-captions and double-click
+    discord-live-captions.exe (Windows may show it as just
+    discord-live-captions, of type "Application").
  3. Windows may say "Windows protected your PC", because the program isn't
     signed. Press "More info", then "Run anyway".
  4. The first time, paste the bot token and press Enter (Ctrl+V or
@@ -52,8 +52,8 @@ WINDOWS
     or pressing Ctrl+C stops the bot.
 
 LINUX (64-bit; a distribution from 2024 or newer, e.g. Ubuntu 24.04)
- 1. unzip hopamine-captions-linux-x64.zip
- 2. cd hopamine-captions && ./hopamine-captions
+ 1. unzip discord-live-captions-linux-x64.zip
+ 2. cd discord-live-captions && ./discord-live-captions
  3. The first time, paste the bot token and press Enter.
  4. Leave it running. Ctrl+C stops it.
 

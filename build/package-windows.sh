@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the Windows download, dist/hopamine-captions-windows-x64.zip: the
+# Builds the Windows download, dist/discord-live-captions-windows-x64.zip: the
 # program, the DLLs it needs and the docs. Running bots update from it too.
 #
 #   build/package-windows.sh [version]
@@ -33,4 +33,4 @@ ldd "$stage/$name.exe" | awk '{ print $3 }' | grep -i "^$MINGW_PREFIX/bin/" | so
 
 add_docs
 
-make_zip hopamine-captions-windows-x64.zip
+make_zip discord-live-captions-windows-x64.zip

@@ -1,6 +1,6 @@
 # Shared by the build scripts, which source it from the project's folder.
 
-name=hopamine-captions
+name=discord-live-captions
 
 fail() {
 	echo "error: $*" >&2
@@ -63,7 +63,7 @@ add_docs() {
 	cp "$dave"/* "$stage/licenses/libdave/"
 }
 
-# make_zip zips everything into dist/$1, inside a hopamine-captions folder
+# make_zip zips everything into dist/$1, inside a discord-live-captions folder
 # (updater.zipFolder). It's both what people download and what a running bot
 # downloads to update itself. The speech model isn't in it: the bot downloads
 # that itself the first time it runs (speechmodel).
