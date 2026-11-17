@@ -112,15 +112,26 @@ jobs:
 
       # No -race: Linux already runs it. This proves the program works on
       # Windows, with the real model and DLLs.
+      #
+      # Windows looks for a program's DLLs in its own folder, then System32,
+      # and only then the PATH. System32 has its own, older onnxruntime.dll
+      # (sherpa-onnx crashes on it), so the test programs are built into one
+      # folder with our DLLs next to them, as the download has them, and each
+      # runs from its package's folder (where go test would run it).
       - name: Test
         run: |
+          set -e
           export PKG_CONFIG_PATH="$PWD/.libdave/lib/pkgconfig:$PKG_CONFIG_PATH"
-          # The tests need sherpa-onnx's DLLs on the PATH, so its module has
-          # to be downloaded before asking Go where it is.
+          # Downloaded before asking Go where it is.
           go mod download github.com/k2-fsa/sherpa-onnx-go-windows
           sherpa="$(cygpath -u "$(go list -m -f '{{.Dir}}' github.com/k2-fsa/sherpa-onnx-go-windows)")/lib/x86_64-pc-windows-gnu"
-          export PATH="$sherpa:$PWD/.libdave/bin:$PATH"
-          go test -tags nolibopusfile ./...
+          go test -c -tags nolibopusfile -o .wintest/ ./...
+          cp "$sherpa/sherpa-onnx-c-api.dll" "$sherpa/onnxruntime.dll" .libdave/bin/libdave.dll .wintest/
+          for test in .wintest/*.test.exe; do
+            package=$(basename "$test" .test.exe)
+            echo "== $package"
+            (cd "$package" && "../$test")
+          done
 
       - name: Package
         run: |
