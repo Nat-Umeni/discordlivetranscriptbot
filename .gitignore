@@ -6,3 +6,5 @@ recordings/
 *.wav
 models/
 /livetranscribebot
+dist/
+.libdave/

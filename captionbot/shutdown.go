@@ -14,6 +14,12 @@ import (
 // then the transcripts, to reach Discord.
 const shutdownTimeout = 15 * time.Second
 
+// Running reports whether captions are running in any server. An update
+// waits until they aren't, so it never cuts a meeting's captions off.
+func (b *Bot) Running() bool {
+	return len(b.sessions.All()) > 0
+}
+
 // ShutDown ends every running session so nothing is left half-done. The order
 // matters:
 //  1. end each session (closing line, notice marked ended, status cleared,

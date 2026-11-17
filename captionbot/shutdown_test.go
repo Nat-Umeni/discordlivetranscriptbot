@@ -81,3 +81,23 @@ func TestShutDownGivesUpWaitingOnAStuckTranscript(t *testing.T) {
 		t.Errorf("a stuck transcript should be logged, not wait forever, logged:\n%s", logs)
 	}
 }
+
+func TestRunning(t *testing.T) {
+	env := newTestEnv(t)
+	if env.bot.Running() {
+		t.Error("nothing should be running yet")
+	}
+
+	env.startCaptions(t)
+	if !env.bot.Running() {
+		t.Error("captions are running")
+	}
+
+	event, _ := env.command(t, moderator, stopCommand())
+	if err := env.bot.onTranscribeStop(event); err != nil {
+		t.Fatal(err)
+	}
+	if env.bot.Running() {
+		t.Error("captions have stopped")
+	}
+}

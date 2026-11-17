@@ -1,0 +1,4 @@
+# Keep LF line endings on every checkout, including GitHub's Windows runner
+# (which would otherwise switch to CRLF): bash can't run scripts with CRLF,
+# and the transcript tests compare files byte for byte.
+* text=auto eol=lf

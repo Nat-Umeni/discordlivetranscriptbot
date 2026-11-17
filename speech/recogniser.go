@@ -7,13 +7,16 @@ import (
 	"path/filepath"
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
+
+	"livetranscribebot/speechmodel"
 )
 
 // DefaultModelDir is the speech model the bot uses: NVIDIA's Nemotron speech
 // streaming 0.6b, 560 ms chunks, int8. On a casual recording it gave the best captions of
 // five models tested, with punctuation and capitals built in, at ~4.9x real
 // time on 4 threads. It runs entirely locally; nothing is sent anywhere.
-const DefaultModelDir = "models/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25"
+// speechmodel downloads it there the first time the bot runs.
+const DefaultModelDir = speechmodel.Dir
 
 // NewRecogniser loads the speech model once. It's the heavy part (~650 MB on
 // disk), so the bot shares one recogniser and gives each speaker their own

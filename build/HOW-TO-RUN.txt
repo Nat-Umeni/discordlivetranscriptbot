@@ -1,0 +1,117 @@
+HOPAMINE LIVE CAPTIONS: HOW TO RUN IT
+=====================================
+
+The bot joins a Discord voice call and captions it live into a thread, so
+Deaf and hard-of-hearing members can follow along. Speech is turned into text
+on this computer by a small speech model. No audio is sent anywhere or saved.
+
+Only one person needs to run it (the "host"). Everyone else just uses Discord.
+It runs while this program is open, so run it on a computer that's on during
+your calls.
+
+
+1. MAKE THE DISCORD BOT (once)
+------------------------------
+
+ 1. Go to https://discord.com/developers/applications and press
+    "New Application". Name it (e.g. "Live Captions").
+ 2. Copy the Application ID from the "General Information" page. You need it
+    for the invite link in step 5.
+ 3. Open "Bot". Under "Privileged Gateway Intents", turn on:
+      - Server Members Intent  (so the no-captions role works straight away)
+      - Message Content Intent (so typed messages are copied into the captions)
+    and press Save.
+ 4. On the same page press "Reset Token" and copy the token. The bot asks for
+    it the first time it runs. Anyone with the token can control the bot, so
+    don't share it.
+ 5. Invite the bot to your server. Open this link with APPLICATION_ID replaced
+    by the ID from step 2:
+
+    https://discord.com/oauth2/authorize?client_id=APPLICATION_ID&scope=bot+applications.commands&permissions=281784215505920
+
+    It asks only for what the bot uses: View Channels, Send Messages, Create
+    Public Threads, Send Messages in Threads, Read Message History, Attach
+    Files, Connect and Set Voice Channel Status.
+
+
+2. START IT
+-----------
+
+WINDOWS
+ 1. Right-click the zip and choose "Extract All". It won't run from inside
+    the zip.
+ 2. In the extracted folder, open hopamine-captions and double-click
+    hopamine-captions.exe (Windows may show it as just hopamine-captions,
+    of type "Application").
+ 3. Windows may say "Windows protected your PC", because the program isn't
+    signed. Press "More info", then "Run anyway".
+ 4. The first time, paste the bot token and press Enter (Ctrl+V or
+    right-click pastes in the black window). It's saved in the .env file
+    next to the program.
+ 5. When it says "Bot is online", leave the window open. Closing the window
+    or pressing Ctrl+C stops the bot.
+
+LINUX (64-bit; a distribution from 2024 or newer, e.g. Ubuntu 24.04)
+ 1. unzip hopamine-captions-linux-x64.zip
+ 2. cd hopamine-captions && ./hopamine-captions
+ 3. The first time, paste the bot token and press Enter.
+ 4. Leave it running. Ctrl+C stops it.
+
+The first start downloads the speech model (about 660 MB, one time) into the
+models folder next to the program, so it needs an internet connection and
+takes a few minutes. If the download stops, start the bot again: it carries on
+with what's left. After that, loading the model takes a few seconds. The bot
+needs about 1 GB of memory and 1 GB of disk space.
+
+
+3. SET IT UP IN YOUR SERVER (once)
+----------------------------------
+
+A server admin (Manage Server) runs:
+
+  /captions-setup captions-channel:#live-captions notetaker-role:@Note-taker no-captions-role:@No captions
+
+ - captions-channel: where each call's captions thread is made. The bot needs
+   View Channel, Send Messages, Create Public Threads, Send Messages in
+   Threads, Read Message History and Attach Files there.
+ - notetaker-role: who can start and stop captions and fix them (moderators
+   with Manage Channels always can).
+ - no-captions-role: anyone with this role is never captioned. Captions can't
+   start until it's set, so there's always a way to opt out.
+
+Run /captions-setup on its own to see the current settings.
+
+
+4. USING IT
+-----------
+
+ - /transcribe start title:Weekly Meetup   (while you're in the voice call)
+   The bot joins, posts a notice in the call's chat, sets the call's status,
+   and captions everyone into a new thread in the captions channel.
+ - Anything typed in the call's chat is copied into the captions too.
+ - Note-takers fix a caption: right-click it (long-press on a phone) →
+   Apps → Fix caption. Change the words, who said it, or add tone tags.
+ - /transcribe stop ends it. The thread gets a transcript (.txt and .md).
+   Captions also stop by themselves a minute after everyone leaves.
+ - /transcribe export, run inside a captions thread, rebuilds its transcript
+   after late fixes.
+
+
+5. GOOD TO KNOW
+---------------
+
+ - Updates: the bot checks for a new version when it starts and once a day.
+   It installs it by itself, waiting until no captions are running, and
+   restarts in the same window. Your settings and token are kept.
+ - Files next to the program:
+     .env           the bot token. To change the token, delete it and start
+                    the bot again.
+     settings.json  each server's /captions-setup choices.
+     models/        the speech model, downloaded on the first start.
+ - "401 Unauthorized" or "Authentication failed" when it starts: the token is
+   wrong or was reset. Delete .env and start it again to paste a new one.
+ - "Disallowed intent(s)": the intents in step 1.3 aren't turned on.
+ - A command says it's outdated: restart Discord (Ctrl+R).
+
+Licences for the parts this is built from are in THIRD_PARTY_NOTICES.txt and
+the licenses folder.

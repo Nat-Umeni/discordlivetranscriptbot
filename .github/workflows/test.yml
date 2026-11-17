@@ -1,0 +1,65 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gates:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # From go.mod, not "latest", so CI can't pass on a toolchain we don't
+          # declare.
+          go-version-file: go.mod
+
+      - name: Install opus
+        run: sudo apt-get update && sudo apt-get install -y libopus-dev pkg-config
+
+      - name: Install libdave
+        run: |
+          build/install-libdave.sh .libdave
+          echo "PKG_CONFIG_PATH=$PWD/.libdave/lib/pkgconfig" >> "$GITHUB_ENV"
+
+      # The speech tests need the model and skip without it, so it's
+      # downloaded once and kept. Change the key with the model
+      # (speechmodel.Dir).
+      - name: Cache the speech model
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: speech-model-sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25
+
+      - name: Download the speech model
+        run: go run ./build/getmodel
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - run: go vet -tags nolibopusfile ./...
+
+      # -race is the gate, not an extra: it's the only thing that catches a
+      # missing mutex.
+      - name: go test -race
+        run: |
+          set -o pipefail
+          go test -race -tags nolibopusfile -v ./... 2>&1 | tee test.log
+
+      # A test that skips (e.g. the model went missing) would otherwise pass
+      # quietly while testing nothing.
+      - name: Check nothing skipped
+        run: |
+          if grep -- '--- SKIP' test.log; then
+            echo "Tests skipped: see above."
+            exit 1
+          fi

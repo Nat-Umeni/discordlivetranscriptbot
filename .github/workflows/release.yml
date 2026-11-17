@@ -1,0 +1,163 @@
+name: release
+
+# Tagging a version (git tag v0.1.0 && git push --tags) builds the Windows and
+# Linux downloads, tests both, and publishes them as a release in the public
+# releases repository, so this code can stay private. Running bots update
+# themselves to it within a day.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  # Where releases go, and where running bots look for them
+  # (updater.repository; a test keeps the two the same).
+  RELEASES_REPO: Nat-Umeni/discord-transcription-releases
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The build names its version with `git describe`, which needs tags.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install opus, patchelf and zip
+        run: sudo apt-get update && sudo apt-get install -y libopus-dev pkg-config patchelf zip
+
+      - name: Install libdave
+        run: |
+          build/install-libdave.sh .libdave
+          echo "PKG_CONFIG_PATH=$PWD/.libdave/lib/pkgconfig" >> "$GITHUB_ENV"
+
+      - name: Cache the speech model
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: speech-model-sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25
+
+      - name: Download the speech model
+        run: go run ./build/getmodel
+
+      # The gates run before anything is published, so a broken build can't
+      # ship.
+      - name: Gates
+        run: |
+          set -o pipefail
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet -tags nolibopusfile ./...
+          go test -race -tags nolibopusfile -v ./... 2>&1 | tee test.log
+          if grep -- '--- SKIP' test.log; then echo "Tests skipped: see above."; exit 1; fi
+
+      - name: Package
+        run: build/package-linux.sh "$GITHUB_REF_NAME"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*.zip
+          # Already zipped: zipping again only costs time.
+          compression-level: 0
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        # MSYS2's MINGW64 shell: gcc, pkg-config and opus for Windows, and
+        # bash, so the build scripts are the same as on Linux.
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          # Keeps Windows' PATH, which has the Go from setup-go.
+          path-type: inherit
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-opus
+            zip
+            unzip
+            bzip2
+
+      - name: Install libdave
+        run: build/install-libdave.sh .libdave
+
+      - name: Cache the speech model
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: speech-model-sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25
+
+      - name: Download the speech model
+        run: go run ./build/getmodel
+
+      # No -race: Linux already runs it. This proves the program works on
+      # Windows, with the real model and DLLs.
+      - name: Test
+        run: |
+          export PKG_CONFIG_PATH="$PWD/.libdave/lib/pkgconfig:$PKG_CONFIG_PATH"
+          sherpa="$(cygpath -u "$(go list -m -f '{{.Dir}}' github.com/k2-fsa/sherpa-onnx-go-windows)")/lib/x86_64-pc-windows-gnu"
+          export PATH="$sherpa:$PWD/.libdave/bin:$PATH"
+          go test -tags nolibopusfile ./...
+
+      - name: Package
+        run: |
+          export PKG_CONFIG_PATH="$PWD/.libdave/lib/pkgconfig:$PKG_CONFIG_PATH"
+          build/package-windows.sh "$GITHUB_REF_NAME"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+          compression-level: 0
+
+  release:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # A running bot checks its update against this before installing it.
+      - name: Checksums
+        run: cd dist && sha256sum *.zip > checksums.txt
+
+      # The same words every time: commit messages from this private
+      # repository never go public.
+      - name: Release notes
+        run: |
+          cat > notes.md <<'NOTES'
+          **New here?** Download the zip for your computer (Windows or Linux), unzip it and follow `HOW-TO-RUN.txt` inside. The first start downloads the speech model (about 660 MB).
+
+          **Already running it?** It updates itself, no need to download anything.
+          NOTES
+
+      # RELEASES_TOKEN is a fine-grained token with write access to the
+      # releases repository only (this workflow's own token can't reach it).
+      # gh is on GitHub's runners, so no third-party action handles it.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$RELEASES_REPO" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md

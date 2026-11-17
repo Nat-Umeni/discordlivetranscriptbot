@@ -2,6 +2,8 @@ package captionbot
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -137,5 +139,20 @@ func TestClearVoiceStatus(t *testing.T) {
 	clearVoiceStatus(&bot.Client{Rest: fake}, meetingChannelID)
 	if !strings.Contains(logs.String(), "couldn't clear the voice channel status") {
 		t.Errorf("a failed clear should be logged, logged:\n%s", logs)
+	}
+}
+
+// The invite link in the download's instructions asks for exactly the
+// permissions the bot checks for, written as one number. Adding a permission
+// to the code without updating the link would leave every new server missing
+// it.
+func TestInviteLinkAsksForThePermissionsTheBotNeeds(t *testing.T) {
+	instructions, err := os.ReadFile("../build/HOW-TO-RUN.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("permissions=%d", captionsPermissions|voicePermissions)
+	if !strings.Contains(string(instructions), want) {
+		t.Errorf("HOW-TO-RUN.txt's invite link should have %s", want)
 	}
 }
