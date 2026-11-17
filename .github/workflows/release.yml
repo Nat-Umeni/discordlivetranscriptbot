@@ -7,6 +7,9 @@ name: release
 on:
   push:
     tags: ['v*']
+  # A dry run from the Actions tab (or `gh workflow run release.yml`): builds
+  # and tests both downloads but publishes nothing.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -112,6 +115,9 @@ jobs:
       - name: Test
         run: |
           export PKG_CONFIG_PATH="$PWD/.libdave/lib/pkgconfig:$PKG_CONFIG_PATH"
+          # The tests need sherpa-onnx's DLLs on the PATH, so its module has
+          # to be downloaded before asking Go where it is.
+          go mod download github.com/k2-fsa/sherpa-onnx-go-windows
           sherpa="$(cygpath -u "$(go list -m -f '{{.Dir}}' github.com/k2-fsa/sherpa-onnx-go-windows)")/lib/x86_64-pc-windows-gnu"
           export PATH="$sherpa:$PWD/.libdave/bin:$PATH"
           go test -tags nolibopusfile ./...
@@ -129,6 +135,8 @@ jobs:
 
   release:
     needs: [linux, windows]
+    # Only a tag publishes: a dry run stops after building and testing.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
